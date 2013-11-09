@@ -5,7 +5,7 @@
 
   <!-- The process ID file. Comment this out if you don't need to know
        the process ID from outside the process (eg for control scripts) -->
-  <pidfile>@localstatedir@/jabberd/pid/c2s.pid</pidfile>
+  <pidfile>@localstatedir@/@package@/pid/c2s.pid</pidfile>
 
   <!-- Router connection configuration -->
   <router>
@@ -60,7 +60,12 @@
 
     <!-- If logging to file, this is the filename of the logfile -->
     <!--
-    <file>@localstatedir@/jabberd/log/c2s.log</file>
+    <file>@localstatedir@/@package@/log/c2s.log</file>
+    -->
+
+    <!-- Filename of the debug logfile -->
+    <!--
+    <debug>@localstatedir@/@package@/log/debug-${id}.log</debug>
     -->
   </log>
 
@@ -329,7 +334,7 @@
   <stats>
     <!-- file containing count of packets that went through -->
     <!--
-    <packet>@localstatedir@/jabberd/stats/c2s.packets</packet>
+    <packet>@localstatedir@/@package@/stats/c2s.packets</packet>
     -->
   </stats>
 
@@ -338,13 +343,26 @@
     <!-- Commands named pipe path. Allows creating "fake" sessions
          with given resource and status -->
     <!--
-    <pipe>@localstatedir@/jabberd/run/pbx</pipe>
+    <pipe>@localstatedir@/@package@/run/pbx</pipe>
     -->
     <!-- Available commands:
-          START jid/resource [CHAT|ONLINE|DND|AWAY|XA [description]]
+          START jid/resource [[priority ]status] [description]
           STOP jid/resource [description]
+          where priority is integer between -128 and +127
+          and status is one of: CHAT, ONLINE, DND, AWAY, XA
     -->
   </pbx>
+
+  <!-- see-other-host error stream redirection support
+       This will redirect connections to specified domains to other host:port
+       Usefull when migrating service and DNS change did not propagate yet.
+       Note that to_address should be RFC 3986 compliant. -->
+  <stream_redirect>
+    <!--
+    <redirect requested_domain="some.domain" to_address="other.hostname" to_port="5269" />
+    <redirect requested_domain="other.domain" to_address="other.host" to_port="1234" />
+    -->
+  </stream_redirect>
 
   <!-- Authentication/registration database configuration -->
   <authreg>
@@ -403,7 +421,7 @@
     <!-- SQLite driver configuration -->
     <sqlite>
       <!-- Database name -->
-      <dbname>@localstatedir@/jabberd/db/sqlite.db</dbname>
+      <dbname>@localstatedir@/@package@/db/sqlite.db</dbname>
 
       <!-- Transacation support. If this is commented out, transactions
            will be disabled. This might make database accesses faster,
@@ -412,6 +430,23 @@
 
       <!-- SQLite busy-timeout in milliseconds. -->
       <busy-timeout>2000</busy-timeout>
+
+      <!-- Passwords in DB may be stored in plain or hashed format -->
+      <!-- NOTE: If you are using hashed passwords, the only auth
+                 method that will work is PLAIN.
+                 Make sure that you disabled others in 'mechanisms'
+                 sections of the config file. -->
+      <password_type>
+        <!-- only one may be enabled here -->
+        <plaintext/>
+        <!-- use crypt(3)ed passwords
+        <crypt/>
+        -->
+        <!-- use A1HASH passwords
+             This stores the MD5 digest of user:realm:password in the database
+        <a1hash/>
+        -->
+      </password_type>
     </sqlite>
 
     <!-- MySQL module configuration -->
@@ -465,6 +500,23 @@
       <!-- Database username and password -->
       <user>jabberd2</user>
       <pass>secret</pass>
+
+      <!-- Passwords in DB may be stored in plain or hashed format -->
+      <!-- NOTE: If you are using hashed passwords, the only auth
+                 method that will work is PLAIN.
+                 Make sure that you disabled others in 'mechanisms'
+                 sections of the config file. -->
+      <password_type>
+        <!-- only one may be enabled here -->
+        <plaintext/>
+        <!-- use crypt(3)ed passwords
+        <crypt/>
+        -->
+        <!-- use A1HASH passwords
+		     This stores the MD5 digest of user:realm:password in the database
+        <a1hash/>
+        -->
+      </password_type>
     </pgsql>
 
     <!-- Oracle driver configuration -->
@@ -484,7 +536,7 @@
     <!-- Berkeley DB module configuration -->
     <db>
       <!-- Directory to store database files under -->
-      <path>@localstatedir@/jabberd/db</path>
+      <path>@localstatedir@/@package@/db</path>
 
       <!-- Synchronize the database to disk after each write. If you
            disable this, database accesses may be faster, but data may
@@ -528,6 +580,15 @@
       <!--
       <validattr>valid</validattr>
       -->
+
+      <!-- Group that users must be members of
+           If this is set, only user that are members of the specified LDAP
+           group can log in. The group must be specified with its full
+           distinguished name -->
+      <!--
+      <group_dn>cn=jabberdusers,ou=servicegroups,dc=example,dc=com</group_dn>
+      -->
+
       <fulluid/>
       <!-- If pwscheme is not defined, then passwords are stored in clear
            text and digest authentication may be done.

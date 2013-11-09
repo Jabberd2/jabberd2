@@ -33,7 +33,7 @@
 /** internal structure, holds our data */
 typedef struct drvdata_st {
     sqlite3 *db;
-    char *prefix;
+    const char *prefix;
     int txn;
 } *drvdata_t;
 
@@ -136,7 +136,7 @@ static char *_st_sqlite_convert_filter (st_driver_t drv, const char *owner,
 					const char *filter) {
 
     char *buf = NULL;
-    unsigned int buflen = 0, nbuf = 0;
+    int buflen = 0, nbuf = 0;
     st_filter_t f;
 
 
@@ -223,7 +223,7 @@ static st_ret_t _st_sqlite_put_guts (st_driver_t drv, const char *type,
     char *key, *cval = NULL;
     void *val;
     os_type_t ot;
-    char *xml;
+    const char *xml;
     int xlen;
     char tbuf[128];
     int res;
@@ -296,11 +296,11 @@ static st_ret_t _st_sqlite_put_guts (st_driver_t drv, const char *type,
 
 		    switch(ot) {
 		     case os_type_BOOLEAN:
-		      sqlite3_bind_int (stmt, i + 2, (int) val ? 1 : 0);
+		      sqlite3_bind_int (stmt, i + 2, val ? 1 : 0);
 		      break;
 
 		     case os_type_INTEGER:
-		      sqlite3_bind_int (stmt, i + 2, (int) val);
+		      sqlite3_bind_int (stmt, i + 2, (long)val); // HACK ugly hack for pointer-to-int-cast
 		      break;
 
 		     case os_type_STRING:
@@ -481,7 +481,7 @@ static st_ret_t _st_sqlite_get (st_driver_t drv, const char *type,
 	    } else if (coltype == SQLITE3_TEXT) {
 		ot = os_type_STRING;
 
-		val = sqlite3_column_text (stmt, i);
+		val = (const char*)sqlite3_column_text (stmt, i);
 		os_object_put (o, colname, val, ot);
 
 	    } else {
@@ -677,11 +677,11 @@ static void _st_sqlite_free (st_driver_t drv) {
 
 DLLEXPORT st_ret_t st_init(st_driver_t drv) {
 
-    char *dbname;
+    const char *dbname;
     sqlite3 *db;
     drvdata_t data;
     int ret;
-    char *busy_timeout;
+    const char *busy_timeout;
 
     dbname = config_get_one (drv->st->config,
 			     "storage.sqlite.dbname", 0);

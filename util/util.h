@@ -112,7 +112,7 @@ extern "C" {
 /*                                                           */
 /** --------------------------------------------------------- */
 JABBERD2_API char *j_strdup(const char *str); /* provides NULL safe strdup wrapper */
-JABBERD2_API char *j_strcat(char *dest, char *txt); /* strcpy() clone */
+JABBERD2_API char *j_strcat(char *dest, const char *txt); /* strcpy() clone */
 JABBERD2_API int j_strcmp(const char *a, const char *b); /* provides NULL safe strcmp wrapper */
 JABBERD2_API int j_strcasecmp(const char *a, const char *b); /* provides NULL safe strcasecmp wrapper */
 JABBERD2_API int j_strncmp(const char *a, const char *b, int i); /* provides NULL safe strncmp wrapper */
@@ -131,8 +131,8 @@ JABBERD2_API void shahash_raw(const char* str, unsigned char hashval[20]);
 /* XML escaping utils                                        */
 /*                                                           */
 /* --------------------------------------------------------- */
-JABBERD2_API char *strescape(pool_t p, char *buf, int len); /* Escape <>&'" chars */
-JABBERD2_API char *strunescape(pool_t p, char *buf);
+JABBERD2_API char *strescape(pool_t p, const char *buf, int len); /* Escape <>&'" chars */
+JABBERD2_API char *strunescape(pool_t p, char* buf);
 
 
 /* --------------------------------------------------------- */
@@ -142,7 +142,7 @@ JABBERD2_API char *strunescape(pool_t p, char *buf);
 /* --------------------------------------------------------- */
 struct spool_node
 {
-    char *c;
+    const char *c;
     struct spool_node *next;
 };
 
@@ -156,10 +156,10 @@ typedef struct spool_struct
 
 JABBERD2_API spool spool_new(pool_t p); /* create a string pool */
 JABBERD2_API void spooler(spool s, ...); /* append all the char * args to the pool, terminate args with s again */
-JABBERD2_API char *spool_print(spool s); /* return a big string */
-JABBERD2_API void spool_add(spool s, char *str); /* add a single string to the pool */
-JABBERD2_API void spool_escape(spool s, char *raw, int len); /* add and xml escape a single string to the pool */
-JABBERD2_API char *spools(pool_t p, ...); /* wrap all the spooler stuff in one function, the happy fun ball! */
+JABBERD2_API const char *spool_print(spool s); /* return a big string */
+JABBERD2_API void spool_add(spool s, const char *str); /* add a single string to the pool */
+JABBERD2_API void spool_escape(spool s, const char *raw, int len); /* add and xml escape a single string to the pool */
+JABBERD2_API const char *spools(pool_t p, ...); /* wrap all the spooler stuff in one function, the happy fun ball! */
 
 
 /* known namespace uri */
@@ -206,9 +206,9 @@ struct config_st
 /** a single element */
 struct config_elem_st
 {
-    char                **values;
+    const char          **values;
     int                 nvalues;
-    char                ***attrs;
+    const char          ***attrs;
 };
 
 JABBERD2_API config_t         config_new(void);
@@ -246,9 +246,9 @@ typedef struct access_st
 
 JABBERD2_API access_t    access_new(int order);
 JABBERD2_API void        access_free(access_t access);
-JABBERD2_API int         access_allow(access_t access, char *ip, char *mask);
-JABBERD2_API int         access_deny(access_t access, char *ip, char *mask);
-JABBERD2_API int         access_check(access_t access, char *ip);
+JABBERD2_API int         access_allow(access_t access, const char *ip, const char *mask);
+JABBERD2_API int         access_deny(access_t access, const char *ip, const char *mask);
+JABBERD2_API int         access_check(access_t access, const char *ip);
 
 
 /*
@@ -303,7 +303,7 @@ JABBERD2_API int         rate_check(rate_t rt);
 
 JABBERD2_API int         ser_string_get(char **dest, int *source, const char *buf, int len);
 JABBERD2_API int         ser_int_get(int *dest, int *source, const char *buf, int len);
-JABBERD2_API void        ser_string_set(char *source, int *dest, char **buf, int *len);
+JABBERD2_API void        ser_string_set(const char *source, int *dest, char **buf, int *len);
 JABBERD2_API void        ser_int_set(int source, int *dest, char **buf, int *len);
 
 /*
@@ -402,8 +402,8 @@ JABBERD2_API struct _stanza_error_st _stanza_errors[];
 
 
 /* hex conversion utils */
-JABBERD2_API void hex_from_raw(char *in, int inlen, char *out);
-JABBERD2_API int hex_to_raw(char *in, int inlen, char *out);
+JABBERD2_API void hex_from_raw(const unsigned char* in, int inlen, char* out);
+JABBERD2_API int hex_to_raw(const char *in, int inlen, char *out);
 
 
 /* xdata in a seperate file */
@@ -414,6 +414,10 @@ JABBERD2_API int hex_to_raw(char *in, int inlen, char *out);
 JABBERD2_API int get_debug_flag(void);
 JABBERD2_API void set_debug_flag(int v);
 JABBERD2_API void debug_log(const char *file, int line, const char *msgfmt, ...);
+JABBERD2_API void set_debug_file(const char *filename);
+
+JABBERD2_API void set_debug_log_from_config(config_t c);
+
 #define ZONE __FILE__,__LINE__
 #define MAX_DEBUG 8192
 
@@ -446,6 +450,18 @@ JABBERD2_API int jabber_wrap_service(int argc, char** argv, jmainhandler_t *wrap
 #if XML_MAJOR_VERSION > 1
 /* XML_StopParser is present in expat 2.x */
 #define HAVE_XML_STOPPARSER
+#if XML_MINOR_VERSION > 0
+/* XML_SetHashSalt is present in expat 2.1.x */
+#define HAVE_XML_SETHASHSALT
+#endif
+#endif
+
+/* define TRUE and FALSE if not yet defined */
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
 #endif
 
 #endif    /* INCL_UTIL_H */

@@ -190,6 +190,9 @@ static pkt_t _iq_vcard_to_pkt(sm_t sm, os_t os) {
 
         log_debug(ZONE, "extracted dbkey %s val '%s' for vcard key %s", dkey, dval, vkey);
 
+        if (!strcmp(dkey, "tel")) {
+            nad_append_elem(pkt->nad, NAD_ENS(pkt->nad, 2), "VOICE", pkt->nad->elems[elem].depth + 1);
+        }
         nad_append_elem(pkt->nad, NAD_ENS(pkt->nad, 2), vskey, pkt->nad->elems[elem].depth + 1);
         nad_append_cdata(pkt->nad, dval, strlen(dval), pkt->nad->elems[elem].depth + 2);
     }
@@ -208,6 +211,9 @@ static mod_ret_t _iq_vcard_in_sess(mod_instance_t mi, sess_t sess, pkt_t pkt) {
 
     /* get */
     if(pkt->type == pkt_IQ) {
+        if (sm_storage_rate_limit(sess->user->sm, jid_user(sess->jid)))
+            return -stanza_err_RESOURCE_CONSTRAINT;
+
         ret = storage_get(sess->user->sm->st, "vcard", jid_user(sess->jid), NULL, &os);
         switch(ret) {
             case st_FAILED:
@@ -245,6 +251,10 @@ static mod_ret_t _iq_vcard_in_sess(mod_instance_t mi, sess_t sess, pkt_t pkt) {
     }
 
     os = _iq_vcard_to_object(mi, pkt);
+    
+    if (sm_storage_rate_limit(sess->user->sm, jid_user(sess->jid)))
+        return -stanza_err_RESOURCE_CONSTRAINT;
+
     ret = storage_replace(sess->user->sm->st, "vcard", jid_user(sess->jid), NULL, os);
     os_free(os);
 
@@ -338,6 +348,9 @@ static mod_ret_t _iq_vcard_pkt_user(mod_instance_t mi, user_t user, pkt_t pkt) {
     if(pkt->type == pkt_IQ_SET)
         return -stanza_err_FORBIDDEN;
 
+    if (sm_storage_rate_limit(user->sm, jid_user(pkt->from)))
+        return -stanza_err_RESOURCE_CONSTRAINT;
+
     ret = storage_get(user->sm->st, "vcard", jid_user(user->jid), NULL, &os);
     switch(ret) {
         case st_FAILED:
@@ -385,7 +398,7 @@ static void _iq_vcard_free(module_t mod) {
     free(mod->private);
 }
 
-DLLEXPORT int module_init(mod_instance_t mi, char *arg) {
+DLLEXPORT int module_init(mod_instance_t mi, const char *arg) {
     module_t mod = mi->mod;
     mod_iq_vcard_t iq_vcard;
 

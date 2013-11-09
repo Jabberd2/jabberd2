@@ -67,7 +67,7 @@ struct acl_s {
 
 struct router_st {
     /** our id */
-    char                *id;
+    const char          *id;
 
     /** config */
     config_t            config;
@@ -85,14 +85,15 @@ struct router_st {
 
     /** log data */
     log_type_t          log_type;
-    char                *log_facility;
-    char                *log_ident;
+    const char          *log_facility;
+    const char          *log_ident;
 
     /** how we listen for stuff */
-    char                *local_ip;
+    const char          *local_ip;
     int                 local_port;
-    char                *local_secret;
-    char                *local_pemfile;
+    const char          *local_secret;
+    const char          *local_pemfile;
+    const char          *local_private_key_password;
 
     /** max file descriptors */
     int                 io_max_fds;
@@ -136,7 +137,7 @@ struct router_st {
     xht                 routes;
 
     /** default route, only one */
-    char                *default_route;
+    const char          *default_route;
 
     /** log sinks, key is route name, var is component_t */
     xht                 log_sinks;
@@ -155,6 +156,10 @@ struct router_st {
 
     /** list of routes_t waiting to be cleaned up */
     jqueue_t            deadroutes;
+
+    /** simple message logging */
+	int message_logging_enabled;
+	const char *message_logging_file;
 };
 
 /** a single component */
@@ -200,15 +205,15 @@ typedef enum {
 
 struct routes_st
 {
-    char                *name;
+    const char          *name;
     route_type_t        rtype;
     component_t         *comp;
     int                 ncomp;
 };
 
 struct alias_st {
-    char                *name;
-    char                *target;
+    const char          *name;
+    const char          *target;
 
     alias_t             next;
 };
@@ -226,6 +231,8 @@ void    user_table_unload(router_t r);
 int     filter_load(router_t r);
 void    filter_unload(router_t r);
 int     filter_packet(router_t r, nad_t nad);
+
+int     message_log(nad_t nad, router_t r, const char *msg_from, const char *msg_to);
 
 void routes_free(routes_t routes);
 

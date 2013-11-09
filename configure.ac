@@ -11,7 +11,6 @@ AM_INIT_AUTOMAKE
 AC_PROG_CC
 AM_PROG_CC_C_O
 AC_PROG_CPP
-AC_PROG_CXX
 AC_PROG_INSTALL
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
@@ -109,7 +108,7 @@ AC_CHECK_HEADERS([arpa/inet.h \
                   windows.h \
                   winsock2.h \
 ])
- 
+
 # Now check for those headers that do, including all the required
 # headers.
 AC_CHECK_HEADERS([resolv.h windns.h],,,
@@ -136,8 +135,8 @@ AC_TYPE_UINT16_T
 AC_TYPE_UINT32_T
 AC_TYPE_UINT8_T
 
-# generic system types 
-AC_CREATE_STDINT_H(ac-stdint.h) 
+# generic system types
+AC_CREATE_STDINT_H(ac-stdint.h)
 
 # Checks for library functions.
 AC_FUNC_CLOSEDIR_VOID
@@ -425,7 +424,7 @@ AM_CONDITIONAL(SASL_CYRUS, [test "x-$sasl_backend" = "x-cyrus"])
 #
 # optional libs
 
-# OpenSSL >= 0.9.6b
+# OpenSSL >= 1.0.1
 AC_ARG_ENABLE(ssl, AC_HELP_STRING([--enable-ssl], [enable SSL/TLS support (yes)]), want_ssl=$enableval, want_ssl=yes)
 if test "x-$want_ssl" = "x-yes" ; then
     AC_CHECK_HEADERS(openssl/crypto.h)
@@ -439,15 +438,15 @@ if test "x-$want_ssl" = "x-yes" ; then
         AC_CHECK_LIB(ssl, SSL_connect)
     fi
     if test "x-$ac_cv_lib_ssl_SSL_connect" = "x-yes" ; then
-        AC_MSG_CHECKING(for OpenSSL version >= 0.9.6b)
+        AC_MSG_CHECKING(for OpenSSL version >= 1.0.1)
         AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <openssl/crypto.h>]],
-                                       [[return !(SSLeay() >= 0x000906020L)]])],
+                                       [[return !(SSLeay() >= 0x010001000L)]])],
                       [AC_MSG_RESULT(yes)
                        have_openssl=yes],
                       AC_MSG_RESULT(no))
     fi
     if test "x-$have_openssl" != "x-yes" ; then
-        AC_MSG_ERROR([OpenSSL >= 0.9.6b not found])
+        AC_MSG_ERROR([OpenSSL >= 1.0.1 not found])
     fi
 
     AC_DEFINE(HAVE_SSL,1,[Define to 1 if OpenSSL is available.])
@@ -638,8 +637,8 @@ if test "x-$want_db" = "x-yes" ; then
                                                                      db_version(&major, &minor, &patch);
                                                                      if(major < 4 ||
                                                                          (major == 4 && minor < 1) ||
-                                                                         (major == 4 && minor == 1 && patch < 24) || 
-                                                                         (int)DB_VERSION_MAJOR != major || 
+                                                                         (major == 4 && minor == 1 && patch < 24) ||
+                                                                         (int)DB_VERSION_MAJOR != major ||
                                                                          (int)DB_VERSION_MINOR != minor)
                                                                          return 1;
                                                                  } while(0)]])],
@@ -930,9 +929,15 @@ if test "x-$want_experimental" = "x-yes" ; then
 fi
 AM_CONDITIONAL(ENABLE_EXPERIMENTAL, [test "x-$want_experimental" = "x-yes"])
 
-PKG_CHECK_MODULES([CPPUNIT], [cppunit])
-AC_SUBST(CPPUNIT_CFLAGS)
-AC_SUBST(CPPUNIT_LDFLAGS)
+AC_ARG_ENABLE(tests, AC_HELP_STRING([--enable-tests], [enable tests (yes)]),
+              want_tests=$enableval, want_tests=yes)
+if test "x-$want_tests" = "x-yes" ; then
+    PKG_CHECK_MODULES([CHECK], [check >= 0.9.4], [want_tests=yes], [want_tests=no])
+fi
+AM_CONDITIONAL(ENABLE_TESTS, [test "x-$want_tests" = "x-yes"])
+
+AC_ARG_ENABLE([werror], AC_HELP_STRING([--enable-werror], [Treat all warnings as error]),
+              CFLAGS="-Wall -Werror $CFLAGS")
 
 # Generate Makefiles
 AC_CONFIG_FILES([Doxyfile
@@ -950,6 +955,5 @@ AC_CONFIG_FILES([Doxyfile
                  s2s/Makefile
                  sm/Makefile
                  tools/Makefile
-                 tests/Makefile
-                 tests/config/Makefile])
+                 tests/Makefile])
 AC_OUTPUT

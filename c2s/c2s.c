@@ -30,6 +30,7 @@ static int _c2s_client_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) 
     nad_t nad;
     char root[9];
     bres_t bres, ires;
+    stream_redirect_t redirect;
 
     switch(e) {
         case event_WANT_READ:
@@ -176,6 +177,20 @@ static int _c2s_client_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) 
                 sx_error(s, stream_err_HOST_UNKNOWN, "no 'to' attribute on stream header");
                 sx_close(s);
 
+                return 0;
+            }
+
+            /* send a see-other-host error if we're configured to do so */
+            redirect = (stream_redirect_t) xhash_get(sess->c2s->stream_redirects, s->req_to);
+            if (redirect != NULL) {
+                log_debug(ZONE, "redirecting client's stream using see-other-host for domain: '%s'", s->req_to);
+                len = strlen(redirect->to_address) + strlen(redirect->to_port) + 1;
+                char *other_host = (char *) malloc(len+1);
+                snprintf(other_host, len+1, "%s:%s", redirect->to_address, redirect->to_port);
+                sx_error_extended(s, stream_err_SEE_OTHER_HOST, other_host);
+                free(other_host);
+                sx_close(s);
+                
                 return 0;
             }
 
@@ -473,7 +488,11 @@ static int _c2s_client_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) 
 
             /* they sasl auth'd, so we only want the new-style session start */
             else {
-                log_write(sess->c2s->log, LOG_NOTICE, "[%d] SASL authentication succeeded: mechanism=%s; authzid=%s%s%s", sess->s->tag, &sess->s->auth_method[5], sess->s->auth_id, sess->s->ssf ? ", TLS negotiated" : "", sess->s->compressed ? ", ZLIB compression enabled" : "");
+                log_write(sess->c2s->log, LOG_NOTICE, "[%d] %s authentication succeeded: %s %s:%d%s%s",
+                    sess->s->tag, &sess->s->auth_method[5],
+                    sess->s->auth_id, sess->s->ip, sess->s->port,
+                    sess->s->ssf ? " TLS" : "", sess->s->compressed ? " ZLIB" : ""
+                );
                 sess->sasl_authd = 1;
             }
 
@@ -481,13 +500,14 @@ static int _c2s_client_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) 
 
         case event_CLOSED:
             mio_close(sess->c2s->mio, sess->fd);
+            sess->fd = NULL;
             return -1;
     }
 
     return 0;
 }
 
-static int _c2s_client_accept_check(c2s_t c2s, mio_fd_t fd, char *ip) {
+static int _c2s_client_accept_check(c2s_t c2s, mio_fd_t fd, const char *ip) {
     rate_t rt;
 
     if(access_check(c2s->access, ip) == 0) {
@@ -519,7 +539,8 @@ static int _c2s_client_mio_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *
     c2s_t c2s = (c2s_t) arg;
     bres_t bres;
     struct sockaddr_storage sa;
-    int namelen = sizeof(sa), port, nbytes, flags = 0;
+    socklen_t namelen = sizeof(sa);
+    int port, nbytes, flags = 0;
 
     switch(a) {
         case action_READ:
@@ -596,6 +617,7 @@ static int _c2s_client_mio_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *
 
             /* give IP to SX */
             sess->s->ip = sess->ip;
+            sess->s->port = sess->port;
 
             /* find out which port this is */
             getsockname(fd->fd, (struct sockaddr *) &sa, &namelen);
@@ -684,6 +706,7 @@ int c2s_router_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
     char skey[44];
     sess_t sess;
     bres_t bres, ires;
+    char *smcomp;
 
     switch(e) {
         case event_WANT_READ:
@@ -799,7 +822,7 @@ int c2s_router_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                     if(ns >= 0) {
                         elem = nad_find_elem(nad, 0, ns, "starttls", 1);
                         if(elem >= 0) {
-                            if(sx_ssl_client_starttls(c2s->sx_ssl, s, c2s->router_pemfile) == 0) {
+                            if(sx_ssl_client_starttls(c2s->sx_ssl, s, c2s->router_pemfile, c2s->router_private_key_password) == 0) {
                                 nad_free(nad);
                                 return 0;
                             }
@@ -957,7 +980,7 @@ int c2s_router_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                     target = nad_find_attr(nad, 1, -1, "target", NULL);
                     smid = nad_find_attr(nad, 1, ns, "sm", NULL);
                     if(target < 0 || smid < 0) {
-                        char *buf;
+                        const char *buf;
                         int len;
                         nad_print(nad, 0, &buf, &len);
                         log_write(c2s->log, LOG_NOTICE, "sm sent an invalid start packet: %.*s", len, buf );
@@ -1012,9 +1035,13 @@ int c2s_router_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
 
                 nad_free(nad);
 
-                /* return the result to the client */
-                sx_nad_write(sess->s, sess->result);
-                sess->result = NULL;
+                if(sess->result) {
+                    /* return the result to the client */
+                    sx_nad_write(sess->s, sess->result);
+                    sess->result = NULL;
+                } else {
+                    log_write(sess->c2s->log, LOG_WARNING, "user created for session %s which is already gone", skey);
+                }
 
                 return 0;
             }
@@ -1236,8 +1263,11 @@ int c2s_router_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
 
                     /* and remember the SM that services us */
                     from = nad_find_attr(nad, 0, -1, "from", NULL);
-                    sess->smcomp = malloc(NAD_AVAL_L(nad, from) + 1);
-                    snprintf(sess->smcomp, NAD_AVAL_L(nad, from) + 1, "%.*s", NAD_AVAL_L(nad, from), NAD_AVAL(nad, from));
+                    
+                    
+                    smcomp = malloc(NAD_AVAL_L(nad, from) + 1);
+                    snprintf(smcomp, NAD_AVAL_L(nad, from) + 1, "%.*s", NAD_AVAL_L(nad, from), NAD_AVAL(nad, from));
+                    sess->smcomp = smcomp;
 
                     nad_free(nad);
 
@@ -1325,6 +1355,7 @@ int c2s_router_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
 
         case event_CLOSED:
             mio_close(c2s->mio, c2s->fd);
+            c2s->fd = NULL;
             return -1;
     }
 

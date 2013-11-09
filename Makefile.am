@@ -1,4 +1,4 @@
-EXTRA_DIST = Doxyfile.in README.win32 README.protocol README.config contrib UPGRADE tests/Makefile.in
+EXTRA_DIST = Doxyfile.in README.win32 README.protocol README.config contrib UPGRADE docs win32
 
 LIBTOOL += --quiet
 
@@ -6,7 +6,10 @@ SUBDIRS = etc man
 if USE_LIBSUBST
 SUBDIRS += subst
 endif
-SUBDIRS += tools mio sx util c2s router s2s storage sm tests/config
+SUBDIRS += tools mio sx util c2s router s2s storage sm
+if ENABLE_TESTS
+SUBDIRS += tests
+endif
 
 .PHONY: docs
 

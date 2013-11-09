@@ -24,6 +24,7 @@
 
 #ifdef DEBUG
 static int debug_flag;
+static FILE *debug_log_target = 0;
 #endif
 
 static const char *_log_level[] =
@@ -47,6 +48,7 @@ static log_facility_t _log_facilities[] = {
     { "local5", LOG_LOCAL5 },
     { "local6", LOG_LOCAL6 },
     { "local7", LOG_LOCAL7 },
+    { "log_user", LOG_USER },
     { NULL, -1 }
 };
 
@@ -158,10 +160,13 @@ void log_write(log_t log, int level, const char *msgfmt, ...)
 #endif
 
 #ifdef DEBUG
+    if (!debug_log_target) {
+        debug_log_target = stderr;
+    }
     /* If we are in debug mode we want everything copied to the stdout */
     if ((log == 0) || (get_debug_flag() && log->type != log_STDOUT)) {
-        fprintf(stdout, "%s\n", message);
-        fflush(stdout);
+        fprintf(debug_log_target, "%s\n", message);
+        fflush(debug_log_target);
     }
 #endif /*DEBUG*/
 }
@@ -184,6 +189,9 @@ void debug_log(const char *file, int line, const char *msgfmt, ...)
     int sz;
     time_t t;
 
+    if (!debug_log_target) {
+        debug_log_target = stderr;
+    }
     /* timestamp */
     t = time(NULL);
     pos = ctime(&t);
@@ -200,9 +208,9 @@ void debug_log(const char *file, int line, const char *msgfmt, ...)
     va_start(ap, msgfmt);
     vsnprintf(pos, MAX_DEBUG - sz, msgfmt, ap);
     va_end(ap);
-    fprintf(stderr,"%s", message);
-    fprintf(stderr, "\n");
-    fflush(stderr);
+    fprintf(debug_log_target,"%s", message);
+    fprintf(debug_log_target, "\n");
+    fflush(debug_log_target);
 }
 
 int get_debug_flag(void)
@@ -214,10 +222,48 @@ void set_debug_flag(int v)
 {
     debug_flag = v;
 }
+
+void set_debug_log_from_config(config_t c)
+{
+    return set_debug_file(config_get_one(c, "log.debug", 0));
+}
+
+JABBERD2_API void set_debug_file(const char *filename)
+{
+    // Close debug output file but not stderr
+    if (debug_log_target != 0 &&
+        debug_log_target != stderr)
+    {
+        fprintf(debug_log_target, "Closing log\n");
+        fclose(debug_log_target);
+
+        debug_log_target = stderr;
+    }
+
+    // Setup new log target
+    if (filename) {
+        log_debug(ZONE, "Openning debug log file %s", filename);
+        debug_log_target = fopen(filename, "a+");
+
+        if (debug_log_target) {
+            log_debug(ZONE, "Staring debug log");
+        } else {
+            debug_log_target = stderr;
+            log_debug(ZONE, "Failed to open debug output file %s. Fallback to stderr", filename);
+        }
+    } else {
+        // set stderr
+        debug_log_target = stderr;
+    }
+}
+
 #else /* DEBUG */
 void debug_log(const char *file, int line, const char *msgfmt, ...)
 { }
 
 void set_debug_flag(int v)
+{ }
+
+void set_debug_log_from_config(config_t c)
 { }
 #endif

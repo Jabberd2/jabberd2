@@ -64,7 +64,8 @@ int in_mio_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *data, void *arg)
     conn_t in = (conn_t) arg;
     s2s_t s2s = (s2s_t) arg;
     struct sockaddr_storage sa;
-    int namelen = sizeof(sa), port, nbytes, flags = 0;
+    socklen_t namelen = sizeof(sa);
+    int port, nbytes, flags = 0;
     char ipport[INET6_ADDRSTRLEN + 17];
 
     switch(a) {
@@ -163,6 +164,8 @@ static int _in_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
     sx_error_t *sxe;
     nad_t nad;
     char ipport[INET6_ADDRSTRLEN + 17];
+    jid_t from;
+    int attr;
 
     switch(e) {
         case event_WANT_READ:
@@ -248,7 +251,7 @@ static int _in_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
 
                    /* remove the initial (non-SSL) stream id from the in connections hash */
                    xhash_zap(in->s2s->in, in->key);
-                   free(in->key);
+                   free((void*)in->key);
                 }
 
                 in->key = strdup(s->id);
@@ -273,7 +276,8 @@ static int _in_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
             in->last_packet = time(NULL);
 
             /* dialback packets */
-            if(NAD_NURI_L(nad, NAD_ENS(nad, 0)) == strlen(uri_DIALBACK) && strncmp(uri_DIALBACK, NAD_NURI(nad, NAD_ENS(nad, 0)), strlen(uri_DIALBACK)) == 0) {
+            if(NAD_NURI_L(nad, NAD_ENS(nad, 0)) == strlen(uri_DIALBACK) && strncmp(uri_DIALBACK, NAD_NURI(nad, NAD_ENS(nad, 0)), strlen(uri_DIALBACK)) == 0 &&
+                    (in->s2s->require_tls == 0 || s->ssf > 0)) {
                 /* only result and verify mean anything */
                 if(NAD_ENAME_L(nad, 0) == 6) {
                     if(strncmp("result", NAD_ENAME(nad, 0), 6) == 0) {
@@ -320,11 +324,31 @@ static int _in_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                 return 0;
             }
 
+            /* perform check against whitelist */
+            attr = nad_find_attr(nad, 0, -1, "from", NULL);
+            if(attr < 0 || (from = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {
+                log_debug(ZONE, "missing or invalid from on incoming packet, attr is %d", attr);
+                nad_free(nad);
+                return 0;
+            }
+
+            if (in->s2s->enable_whitelist > 0 && (s2s_domain_in_whitelist(in->s2s, from->domain) == 0)) {
+                log_write(in->s2s->log, LOG_NOTICE, "received a packet not from a whitelisted domain %s, dropping it", from->domain);
+                jid_free(from);
+                nad_free(nad);
+                return 0;
+            }
+
+            jid_free(from);
+
             _in_packet(in, nad);
             return 0;
 
         case event_CLOSED:
+            if (in->fd != NULL) {
             mio_close(in->s2s->mio, in->fd);
+                in->fd = NULL;
+            }
             return -1;
     }
 

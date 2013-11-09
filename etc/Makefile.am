@@ -11,13 +11,14 @@ SUBDIRS = templates
 jabberd_bin = router sm s2s c2s
 
 edit = sed \
+	-e 's,@package\@,$(PACKAGE),g' \
 	-e 's,@sysconfdir\@,$(sysconfdir),g' \
 	-e 's,@localstatedir\@,$(localstatedir),g' \
 	-e 's,@bindir\@,$(bindir),g' \
 	-e 's,@libdir\@,$(libdir),g' \
 	-e 's,@pkglibdir\@,$(pkglibdir),g'
 
-$(configs): $(sysconf_DATA:%.dist=%.dist.in) $(init_DATA:%.conf=%.conf.in)
+$(configs): $(sysconf_DATA:%.dist=@srcdir@/%.dist.in) $(init_DATA:%.conf=@srcdir@/%.conf.in)
 	@echo "generating $@ from $@.in"; \
     edit='$(edit)'; \
     list='$(jabberd_bin)'; for p in $$list; do \
@@ -25,7 +26,7 @@ $(configs): $(sysconf_DATA:%.dist=%.dist.in) $(init_DATA:%.conf=%.conf.in)
       edit="$$edit -e s,@jabberd_$$p\_bin\\@,$$bin,g"; \
     done; \
 	rm -f $@ $@.tmp; \
-	eval "$$edit < $@.in > $@.tmp"; \
+	eval "$$edit < @srcdir@/$@.in > $@.tmp"; \
 	mv $@.tmp $@ 
     
 install-data-hook:

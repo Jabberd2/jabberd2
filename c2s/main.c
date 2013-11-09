@@ -25,6 +25,7 @@
 static sig_atomic_t c2s_shutdown = 0;
 sig_atomic_t c2s_lost_router = 0;
 static sig_atomic_t c2s_logrotate = 0;
+static sig_atomic_t c2s_sighup = 0;
 
 static void _c2s_signal(int signum)
 {
@@ -35,6 +36,7 @@ static void _c2s_signal(int signum)
 static void _c2s_signal_hup(int signum)
 {
     c2s_logrotate = 1;
+    c2s_sighup = 1;
 }
 
 static void _c2s_signal_usr1(int signum)
@@ -49,7 +51,7 @@ static void _c2s_signal_usr2(int signum)
 
 /** store the process id */
 static void _c2s_pidfile(c2s_t c2s) {
-    char *pidfile;
+    const char *pidfile;
     FILE *f;
     pid_t pid;
 
@@ -77,9 +79,13 @@ static void _c2s_pidfile(c2s_t c2s) {
 /** pull values out of the config file */
 static void _c2s_config_expand(c2s_t c2s)
 {
-    char *str, *ip, *mask;
+    const char *str, *ip, *mask;
+    char *req_domain, *to_address, *to_port;
     config_elem_t elem;
     int i;
+    stream_redirect_t sr;
+
+    set_debug_log_from_config(c2s->config);
 
     c2s->id = config_get_one(c2s->config, "id", 0);
     if(c2s->id == NULL)
@@ -99,6 +105,10 @@ static void _c2s_config_expand(c2s_t c2s)
         c2s->router_pass = "secret";
 
     c2s->router_pemfile = config_get_one(c2s->config, "router.pemfile", 0);
+
+    c2s->router_cachain = config_get_one(c2s->config, "router.cachain", 0);
+
+    c2s->router_private_key_password = config_get_one(c2s->config, "router.private_key_password", 0);
 
     c2s->retry_init = j_atoi(config_get_one(c2s->config, "router.retry.init", 0), 3);
     c2s->retry_lost = j_atoi(config_get_one(c2s->config, "router.retry.lost", 0), 3);
@@ -135,6 +145,8 @@ static void _c2s_config_expand(c2s_t c2s)
 
     c2s->local_cachain = config_get_one(c2s->config, "local.cachain", 0);
 
+    c2s->local_private_key_password = config_get_one(c2s->config, "local.private_key_password", 0);
+
     c2s->local_verify_mode = j_atoi(config_get_one(c2s->config, "local.verify-mode", 0), 0);
 
     c2s->local_ssl_port = j_atoi(config_get_one(c2s->config, "local.ssl-port", 0), 0);
@@ -151,13 +163,42 @@ static void _c2s_config_expand(c2s_t c2s)
 
     c2s->pbx_pipe = config_get_one(c2s->config, "pbx.pipe", 0);
 
+    elem = config_get(c2s->config, "stream_redirect.redirect");
+    if(elem != NULL)
+    {
+        for(i = 0; i < elem->nvalues; i++)
+        {
+            sr = (stream_redirect_t) pmalloco(xhash_pool(c2s->stream_redirects), sizeof(struct stream_redirect_st));
+            if(!sr) {
+                log_write(c2s->log, LOG_ERR, "cannot allocate memory for new stream redirection record, aborting");
+                exit(1);
+            }
+            req_domain = j_attr((const char **) elem->attrs[i], "requested_domain");
+            to_address = j_attr((const char **) elem->attrs[i], "to_address");
+            to_port = j_attr((const char **) elem->attrs[i], "to_port");
+
+            if(req_domain == NULL || to_address == NULL || to_port == NULL) {
+                log_write(c2s->log, LOG_ERR, "Error reading a stream_redirect.redirect element from file, skipping");
+                continue;
+            }
+
+            // Note that to_address should be RFC 3986 compliant
+            sr->to_address = to_address;
+            sr->to_port = to_port;
+            
+            xhash_put(c2s->stream_redirects, pstrdup(xhash_pool(c2s->stream_redirects), req_domain), sr);
+        }
+    }
+
     c2s->ar_module_name = config_get_one(c2s->config, "authreg.module", 0);
 
     if(config_get(c2s->config, "authreg.mechanisms.traditional.plain") != NULL) c2s->ar_mechanisms |= AR_MECH_TRAD_PLAIN;
     if(config_get(c2s->config, "authreg.mechanisms.traditional.digest") != NULL) c2s->ar_mechanisms |= AR_MECH_TRAD_DIGEST;
+    if(config_get(c2s->config, "authreg.mechanisms.traditional.cram-md5") != NULL) c2s->ar_mechanisms |= AR_MECH_TRAD_CRAMMD5;
 
     if(config_get(c2s->config, "authreg.ssl-mechanisms.traditional.plain") != NULL) c2s->ar_ssl_mechanisms |= AR_MECH_TRAD_PLAIN;
     if(config_get(c2s->config, "authreg.ssl-mechanisms.traditional.digest") != NULL) c2s->ar_ssl_mechanisms |= AR_MECH_TRAD_DIGEST;
+    if(config_get(c2s->config, "authreg.ssl-mechanisms.traditional.cram-md5") != NULL) c2s->ar_ssl_mechanisms |= AR_MECH_TRAD_CRAMMD5;
 
     elem = config_get(c2s->config, "io.limits.bytes");
     if(elem != NULL)
@@ -283,16 +324,18 @@ static void _c2s_hosts_expand(c2s_t c2s)
 
         host->host_verify_mode = j_atoi(j_attr((const char **) elem->attrs[i], "verify-mode"), 0);
 
+        host->host_private_key_password = j_attr((const char **) elem->attrs[i], "private-key-password");
+
 #ifdef HAVE_SSL
         if(host->host_pemfile != NULL) {
             if(c2s->sx_ssl == NULL) {
-                c2s->sx_ssl = sx_env_plugin(c2s->sx_env, sx_ssl_init, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode);
+                c2s->sx_ssl = sx_env_plugin(c2s->sx_env, sx_ssl_init, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode, host->host_private_key_password);
                 if(c2s->sx_ssl == NULL) {
                     log_write(c2s->log, LOG_ERR, "failed to load %s SSL pemfile", host->realm);
                     host->host_pemfile = NULL;
                 }
             } else {
-                if(sx_ssl_server_addcert(c2s->sx_ssl, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode) != 0) {
+                if(sx_ssl_server_addcert(c2s->sx_ssl, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode, host->host_private_key_password) != 0) {
                     log_write(c2s->log, LOG_ERR, "failed to load %s SSL pemfile", host->realm);
                     host->host_pemfile = NULL;
                 }
@@ -356,7 +399,7 @@ static int _c2s_router_connect(c2s_t c2s) {
 
 static int _c2s_sx_sasl_callback(int cb, void *arg, void **res, sx_t s, void *cbarg) {
     c2s_t c2s = (c2s_t) cbarg;
-    char *my_realm, *mech;
+    const char *my_realm, *mech;
     sx_sasl_creds_t creds;
     static char buf[3072];
     char mechbuf[256];
@@ -660,6 +703,8 @@ JABBER_MAIN("jabberd2c2s", "Jabber 2 C2S", "Jabber Open Source Server: Client to
         return 2;
     }
 
+    c2s->stream_redirects = xhash_new(523);
+
     _c2s_config_expand(c2s);
 
     c2s->log = log_new(c2s->log_type, c2s->log_ident, c2s->log_facility);
@@ -691,7 +736,7 @@ JABBER_MAIN("jabberd2c2s", "Jabber 2 C2S", "Jabber Open Source Server: Client to
 #ifdef HAVE_SSL
     /* get the ssl context up and running */
     if(c2s->local_pemfile != NULL) {
-        c2s->sx_ssl = sx_env_plugin(c2s->sx_env, sx_ssl_init, NULL, c2s->local_pemfile, c2s->local_cachain, c2s->local_verify_mode);
+        c2s->sx_ssl = sx_env_plugin(c2s->sx_env, sx_ssl_init, NULL, c2s->local_pemfile, c2s->local_cachain, c2s->local_verify_mode, c2s->local_private_key_password);
         if(c2s->sx_ssl == NULL) {
             log_write(c2s->log, LOG_ERR, "failed to load local SSL pemfile, SSL will not be available to clients");
             c2s->local_pemfile = NULL;
@@ -700,7 +745,7 @@ JABBER_MAIN("jabberd2c2s", "Jabber 2 C2S", "Jabber Open Source Server: Client to
 
     /* try and get something online, so at least we can encrypt to the router */
     if(c2s->sx_ssl == NULL && c2s->router_pemfile != NULL) {
-        c2s->sx_ssl = sx_env_plugin(c2s->sx_env, sx_ssl_init, NULL, c2s->router_pemfile, NULL, NULL);
+        c2s->sx_ssl = sx_env_plugin(c2s->sx_env, sx_ssl_init, NULL, c2s->router_pemfile, c2s->router_cachain, NULL, c2s->router_private_key_password);
         if(c2s->sx_ssl == NULL) {
             log_write(c2s->log, LOG_ERR, "failed to load router SSL pemfile, channel to router will not be SSL encrypted");
             c2s->router_pemfile = NULL;
@@ -753,12 +798,61 @@ JABBER_MAIN("jabberd2c2s", "Jabber 2 C2S", "Jabber Open Source Server: Client to
         mio_run(c2s->mio, mio_timeout);
 
         if(c2s_logrotate) {
+            set_debug_log_from_config(c2s->config);
+
             log_write(c2s->log, LOG_NOTICE, "reopening log ...");
             log_free(c2s->log);
             c2s->log = log_new(c2s->log_type, c2s->log_ident, c2s->log_facility);
             log_write(c2s->log, LOG_NOTICE, "log started");
 
             c2s_logrotate = 0;
+        }
+
+        if(c2s_sighup) {
+            log_write(c2s->log, LOG_NOTICE, "reloading some configuration items ...");
+            config_t conf;
+            conf = config_new();
+            if (conf && config_load(conf, config_file) == 0) {
+                xhash_free(c2s->stream_redirects);
+                c2s->stream_redirects = xhash_new(523);
+
+                char *req_domain, *to_address, *to_port;
+                config_elem_t elem;
+                int i;
+                stream_redirect_t sr;
+
+                elem = config_get(conf, "stream_redirect.redirect");
+                if(elem != NULL)
+                {
+                    for(i = 0; i < elem->nvalues; i++)
+                    {
+                        sr = (stream_redirect_t) pmalloco(xhash_pool(c2s->stream_redirects), sizeof(struct stream_redirect_st));
+                        if(!sr) {
+                            log_write(c2s->log, LOG_ERR, "cannot allocate memory for new stream redirection record, aborting");
+                            exit(1);
+                        }
+                        req_domain = j_attr((const char **) elem->attrs[i], "requested_domain");
+                        to_address = j_attr((const char **) elem->attrs[i], "to_address");
+                        to_port = j_attr((const char **) elem->attrs[i], "to_port");
+
+                        if(req_domain == NULL || to_address == NULL || to_port == NULL) {
+                            log_write(c2s->log, LOG_ERR, "Error reading a stream_redirect.redirect element from file, skipping");
+                            continue;
+                        }
+
+                        // Note that to_address should be RFC 3986 compliant
+                        sr->to_address = to_address;
+                        sr->to_port = to_port;
+                        
+                        xhash_put(c2s->stream_redirects, pstrdup(xhash_pool(c2s->stream_redirects), req_domain), sr);
+                    }
+                }
+                config_free(conf);
+            } else {
+                log_write(c2s->log, LOG_WARNING, "couldn't reload config (%s)", config_file);
+                if (conf) config_free(conf);
+            }
+            c2s_sighup = 0;
         }
 
         if(c2s_lost_router) {
@@ -789,8 +883,8 @@ JABBER_MAIN("jabberd2c2s", "Jabber 2 C2S", "Jabber Open Source Server: Client to
             sess = (sess_t) jqueue_pull(c2s->dead_sess);
 
             /* free sess data */
-            if(sess->ip != NULL) free(sess->ip);
-            if(sess->smcomp != NULL) free(sess->smcomp);
+            if(sess->ip != NULL) free((void*)sess->ip);
+            if(sess->smcomp != NULL) free((void*)sess->smcomp);
             if(sess->result != NULL) nad_free(sess->result);
             if(sess->resources != NULL)
                 for(res = sess->resources; res != NULL;) {
@@ -860,7 +954,7 @@ JABBER_MAIN("jabberd2c2s", "Jabber 2 C2S", "Jabber Open Source Server: Client to
         sess = (sess_t) jqueue_pull(c2s->dead_sess);
 
         /* free sess data */
-        if(sess->ip != NULL) free(sess->ip);
+        if(sess->ip != NULL) free((void*)sess->ip);
         if(sess->result != NULL) nad_free(sess->result);
         if(sess->resources != NULL)
             for(res = sess->resources; res != NULL;) {
@@ -888,6 +982,8 @@ JABBER_MAIN("jabberd2c2s", "Jabber 2 C2S", "Jabber Open Source Server: Client to
     authreg_free(c2s->ar);
 
     xhash_free(c2s->conn_rates);
+
+    xhash_free(c2s->stream_redirects);
 
     xhash_free(c2s->sm_avail);
 

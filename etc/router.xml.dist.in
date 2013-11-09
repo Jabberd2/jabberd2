@@ -5,7 +5,7 @@
 
   <!-- The process ID file. Comment this out if you don't need to know
        the process ID from outside the process (eg for control scripts) -->
-  <pidfile>@localstatedir@/jabberd/pid/router.pid</pidfile>
+  <pidfile>@localstatedir@/@package@/pid/router.pid</pidfile>
 
   <!-- Log configuration - type is "syslog", "file" or "stdout" -->
   <log type='syslog'>
@@ -18,7 +18,12 @@
 
     <!-- If logging to file, this is the filename of the logfile -->
     <!--
-    <file>@localstatedir@/jabberd/log/router.log</file>
+    <file>@localstatedir@/@package@/log/router.log</file>
+    -->
+
+    <!-- Filename of the debug logfile -->
+    <!--
+    <debug>@localstatedir@/@package@/log/debug-${id}.log</debug>
     -->
   </log>
 
@@ -194,6 +199,15 @@
     <filter>@sysconfdir@/router-filter.xml</filter>
 
   </aci>
+
+  <!-- Simple message logging to flat file
+       Remove <enabled/> tag to disable logging -->
+  <!--
+  <message_logging>
+    <enabled/>
+    <file>filename</file>
+  </message_logging>
+  -->
 
 </router>
 <!--

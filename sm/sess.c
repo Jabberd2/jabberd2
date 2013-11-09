@@ -105,7 +105,7 @@ sess_t sess_start(sm_t sm, jid_t jid) {
     user_t user;
     sess_t sess, scan;
     sha1_state_t sha1;
-    char hash[20];
+    unsigned char hash[20];
     int replaced = 0;
 
     log_debug(ZONE, "session requested for %s", jid_full(jid));
@@ -203,7 +203,7 @@ sess_t sess_start(sm_t sm, jid_t jid) {
 }
 
 /** match a session by resource */
-sess_t sess_match(user_t user, char *resource) {
+sess_t sess_match(user_t user, const char *resource) {
     sess_t sess;
 
     for(sess = user->sessions; sess != NULL; sess = sess->next) {

@@ -127,7 +127,7 @@ static void _out_packet_queue(s2s_t s2s, pkt_t pkt) {
     jqueue_push(q, (void *) pkt, 0);
 }
 
-static void _out_dialback(conn_t out, char *rkey, int rkeylen) {
+static void _out_dialback(conn_t out, const char *rkey, int rkeylen) {
     char *c, *dbkey, *tmp;
     nad_t nad;
     int elem, ns;
@@ -140,7 +140,7 @@ static void _out_dialback(conn_t out, char *rkey, int rkeylen) {
     from_len = c - rkey;
     c++;
     to_len = rkeylen - (c - rkey);
-    
+
     /* kick off the dialback */
     tmp = strndup(c, to_len);
     dbkey = s2s_db_key(NULL, out->s2s->local_secret, tmp, out->s->id);
@@ -162,7 +162,7 @@ static void _out_dialback(conn_t out, char *rkey, int rkeylen) {
     sx_nad_write(out->s, nad);
 
     free(dbkey);
-            
+
     /* we're in progress now */
     xhash_put(out->states, pstrdupx(xhash_pool(out->states), rkey, rkeylen), (void *) conn_INPROGRESS);
 
@@ -170,23 +170,18 @@ static void _out_dialback(conn_t out, char *rkey, int rkeylen) {
     xhash_put(out->states_time, pstrdupx(xhash_pool(out->states_time), rkey, rkeylen), (void *) now);
 }
 
-void _out_dns_mark_bad(conn_t out, char *ipport) {
-    dnsres_t bad;
-    int ipport_allocated = 0;
-
+void _out_dns_mark_bad(conn_t out) {
     if (out->s2s->dns_bad_timeout > 0) {
+        dnsres_t bad;
+        char *ipport;
+
         /* mark this host as bad */
-        if(ipport == NULL) {
-            ipport_allocated = 1;
-            ipport = dns_make_ipport(out->ip, out->port);
-        }
+        ipport = dns_make_ipport(out->ip, out->port);
         bad = xhash_get(out->s2s->dns_bad, ipport);
         if (bad == NULL) {
             bad = (dnsres_t) calloc(1, sizeof(struct dnsres_st));
             bad->key = ipport;
             xhash_put(out->s2s->dns_bad, ipport, bad);
-        } else if(ipport_allocated) {
-            free(ipport);
         }
         bad->expiry = time(NULL) + out->s2s->dns_bad_timeout;
     }
@@ -208,7 +203,7 @@ int dns_select(s2s_t s2s, char *ip, int *port, time_t now, dnscache_t dns, int a
     int c_expired_good = 0;
     union xhashv xhv;
     dnsres_t res;
-    char *ipport;
+    const char *ipport;
     int ipport_len;
     char *c;
     int c_len;
@@ -408,12 +403,12 @@ int dns_select(s2s_t s2s, char *ip, int *port, time_t now, dnscache_t dns, int a
 }
 
 /** find/make a connection for a route */
-int out_route(s2s_t s2s, char *route, int routelen, conn_t *out, int allow_bad) {
+int out_route(s2s_t s2s, const char *route, int routelen, conn_t *out, int allow_bad) {
     dnscache_t dns;
     char ipport[INET6_ADDRSTRLEN + 16], *dkey, *c;
     time_t now;
     int reuse = 0;
-    char ip[INET6_ADDRSTRLEN];
+    char ip[INET6_ADDRSTRLEN] = {0};
     int port, c_len, from_len;
 
     c = memchr(route, '/', routelen);
@@ -535,12 +530,24 @@ int out_route(s2s_t s2s, char *route, int routelen, conn_t *out, int allow_bad) 
             /* connect */
             log_debug(ZONE, "initiating connection to %s", ipport);
 
-            (*out)->fd = mio_connect(s2s->mio, port, ip, s2s->origin_ip, _out_mio_callback, (void *) *out);
+            /* APPLE: multiple origin_ips may be specified; use IPv6 if possible or otherwise IPv4 */
+            int ip_is_v6 = 0;
+            if (strchr(ip, ':') != NULL)
+                ip_is_v6 = 1;
+            int i;
+            for (i = 0; i < s2s->origin_nips; i++) {
+                // only bother with mio_connect if the src and dst IPs are of the same type
+                if ((ip_is_v6 && (strchr(s2s->origin_ips[i], ':') != NULL)) ||          // both are IPv6
+                            (! ip_is_v6 && (strchr(s2s->origin_ips[i], ':') == NULL)))  // both are IPv4
+                    (*out)->fd = mio_connect(s2s->mio, port, ip, s2s->origin_ips[i], _out_mio_callback, (void *) *out);
+
+                if ((*out)->fd != NULL) break;
+            }
 
             if ((*out)->fd == NULL) {
                 log_write(s2s->log, LOG_NOTICE, "[%d] [%s, port=%d] mio_connect error: %s (%d)", -1, (*out)->ip, (*out)->port, MIO_STRERROR(MIO_ERROR), MIO_ERROR);
 
-                _out_dns_mark_bad(*out, ipport);
+                _out_dns_mark_bad(*out);
 
                 if (s2s->out_reuse)
                    xhash_zap(s2s->out_host, (*out)->key);
@@ -551,8 +558,8 @@ int out_route(s2s_t s2s, char *route, int routelen, conn_t *out, int allow_bad) 
 
                 xhash_free((*out)->routes);
 
-                free((*out)->key);
-                free((*out)->dkey);
+                free((void*)(*out)->key);
+                free((void*)(*out)->dkey);
                 free(*out);
                 *out = NULL;
 
@@ -606,6 +613,22 @@ int out_packet(s2s_t s2s, pkt_t pkt) {
     conn_t out;
     conn_state_t state;
     int ret;
+
+    /* perform check against whitelist */
+    if (s2s->enable_whitelist > 0 &&
+            (pkt->to->domain != NULL) &&
+            (s2s_domain_in_whitelist(s2s, pkt->to->domain) == 0)) {
+        log_write(s2s->log, LOG_NOTICE, "sending a packet to domain not in the whitelist, dropping it");
+        if (pkt->to != NULL)
+            jid_free(pkt->to);
+        if (pkt->from != NULL)
+            jid_free(pkt->from);
+        if (pkt->nad != NULL)
+            nad_free(pkt->nad);
+        free(pkt);
+
+        return 0;
+    }
 
     /* new route key */
     rkey = s2s_route_key(NULL, pkt->from->domain, pkt->to->domain);
@@ -661,7 +684,7 @@ int out_packet(s2s_t s2s, pkt_t pkt) {
         } else {
             /* if the outgoing stanza has a jabber:client namespace, remove it so that the stream jabber:server namespaces will apply (XMPP 11.2.2) */
             int ns = nad_find_namespace(pkt->nad, 1, uri_CLIENT, NULL);
-            if(ns >= 0) { 
+            if(ns >= 0) {
                /* clear the namespaces of elem 0 (internal route element) and elem 1 (message|iq|presence) */
                pkt->nad->elems[0].ns = -1;
                pkt->nad->elems[0].my_ns = -1;
@@ -694,13 +717,14 @@ int out_packet(s2s_t s2s, pkt_t pkt) {
     }
 
     /* this is a new route - send dialback auth request to piggyback on the existing connection */
+    if (out->s2s->require_tls == 0 || out->s->ssf > 0) {
     _out_dialback(out, rkey, rkeylen);
-
+    }
     free(rkey);
     return 0;
 }
 
-char *dns_make_ipport(char *host, int port) {
+char *dns_make_ipport(const char *host, int port) {
     char *c;
     assert(port > 0 && port < 65536);
 
@@ -709,7 +733,7 @@ char *dns_make_ipport(char *host, int port) {
     return c;
 }
 
-static void _dns_add_result(dnsquery_t query, char *ip, int port, int prio, int weight, unsigned int ttl) {
+static void _dns_add_result(dnsquery_t query, const char *ip, int port, int prio, int weight, unsigned int ttl) {
     char *ipport = dns_make_ipport(ip, port);
     dnsres_t res = xhash_get(query->results, ipport);
 
@@ -757,7 +781,7 @@ static void _dns_add_result(dnsquery_t query, char *ip, int port, int prio, int 
     free(ipport);
 }
 
-static void _dns_add_host(dnsquery_t query, char *ip, int port, int prio, int weight, unsigned int ttl) {
+static void _dns_add_host(dnsquery_t query, const char *ip, int port, int prio, int weight, unsigned int ttl) {
     char *ipport = dns_make_ipport(ip, port);
     dnsres_t res = xhash_get(query->hosts, ipport);
 
@@ -840,7 +864,7 @@ static void _dns_result_srv(struct dns_ctx *ctx, struct dns_rr_srv *result, void
                     result->dnssrv_srv[i].weight, result->dnssrv_ttl);
             }
         }
-        
+
         free(result);
     }
 
@@ -1077,7 +1101,7 @@ static void _dns_result_a(struct dns_ctx *ctx, struct dns_rr_a4 *result, void *d
         port_len = ipport_len - (c - ipport);
 
         /* resolve hostname */
-        free(query->cur_host);
+        free((void*)query->cur_host);
         query->cur_host = strndup(ipport, ip_len);
         tmp = strndup(c, port_len);
         query->cur_port = atoi(tmp);
@@ -1110,7 +1134,7 @@ static void _dns_result_a(struct dns_ctx *ctx, struct dns_rr_a4 *result, void *d
         time_t now = time(NULL);
         char *domain;
 
-        free(query->cur_host);
+        free((void*)query->cur_host);
         query->cur_host = NULL;
 
         log_debug(ZONE, "dns requests for %s@%p complete: %d (%d)", query->name,
@@ -1147,8 +1171,7 @@ static void _dns_result_a(struct dns_ctx *ctx, struct dns_rr_a4 *result, void *d
 
         xhash_free(query->hosts);
         query->hosts = NULL;
-        if (idna_to_unicode_8z8z(query->name, &domain, 0) != IDNA_SUCCESS)
-        {
+        if (idna_to_unicode_8z8z(query->name, &domain, 0) != IDNA_SUCCESS) {
             log_write(query->s2s->log, LOG_ERR, "idna dns decode for %s failed", query->name);
             /* fake empty results to shortcut resolution failure */
             xhash_free(query->results);
@@ -1158,24 +1181,25 @@ static void _dns_result_a(struct dns_ctx *ctx, struct dns_rr_a4 *result, void *d
         }
         out_resolve(query->s2s, domain, query->results, query->expiry);
         free(domain);
-        free(query->name);
+        free((void*)query->name);
         free(query);
     }
 }
 
 void dns_resolve_domain(s2s_t s2s, dnscache_t dns) {
     dnsquery_t query = (dnsquery_t) calloc(1, sizeof(struct dnsquery_st));
+    char *name;
 
     query->s2s = s2s;
     query->results = xhash_new(71);
-    if (idna_to_ascii_8z(dns->name, &query->name, 0) != IDNA_SUCCESS)
-    {
+    if (idna_to_ascii_8z(dns->name, &name, 0) != IDNA_SUCCESS) {
         log_write(s2s->log, LOG_ERR, "idna dns encode for %s failed", dns->name);
         /* shortcut resolution failure */
         query->expiry = time(NULL) + 99999999;
         out_resolve(query->s2s, dns->name, query->results, query->expiry);
         return;
     }
+    query->name = name;
     query->hosts = xhash_new(71);
     query->srv_i = -1;
     query->expiry = 0;
@@ -1196,7 +1220,7 @@ void dns_resolve_domain(s2s_t s2s, dnscache_t dns) {
 }
 
 /** responses from the resolver */
-void out_resolve(s2s_t s2s, char *domain, xht results, time_t expiry) {
+void out_resolve(s2s_t s2s, const char *domain, xht results, time_t expiry) {
     dnscache_t dns;
 
     /* no results, resolve failed */
@@ -1225,13 +1249,21 @@ void out_resolve(s2s_t s2s, char *domain, xht results, time_t expiry) {
 
     /* get the cache entry */
     dns = xhash_get(s2s->dnscache, domain);
-    if(dns == NULL) {
-        log_debug(ZONE, "weird, we never requested this");
 
-        xhash_free(results);
+    if(dns == NULL) {
+        /* retry using punycode */
+        char *punydomain;
+        if (idna_to_ascii_8z(domain, &punydomain, 0) == IDNA_SUCCESS) {
+            dns = xhash_get(s2s->dnscache, punydomain);
+            free(punydomain);
+        }
+    }
+
+    if(dns == NULL) {
+        log_write(s2s->log, LOG_ERR, "weird, never requested %s resolution", domain);
         return;
     }
-    
+
     /* fill it out */
     xhash_free(dns->results);
     dns->query = NULL;
@@ -1326,7 +1358,7 @@ static int _out_mio_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *data, v
 
                     q = xhash_getx(out->s2s->outq, rkey, rkeylen);
                     if (out->s2s->retry_limit > 0 && q != NULL && jqueue_age(q) > out->s2s->retry_limit) {
-                        log_debug(ZONE, "retry limit reached for '%.*s' queue", rkeylen, rkey);
+                        log_write(out->s2s->log, LOG_NOTICE, "[%d] [%s, port=%d] retry limit reached for '%.*s' queue", fd->fd, out->ip, out->port, rkeylen, rkey);
                         q = NULL;
                     }
 
@@ -1346,12 +1378,12 @@ static int _out_mio_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *data, v
 
                             /* bounce queue */
                             out_bounce_route_queue(out->s2s, rkey, rkeylen, stanza_err_SERVICE_UNAVAILABLE);
-                            _out_dns_mark_bad(out, NULL);
+                            _out_dns_mark_bad(out);
                         }
                     } else {
                         /* bounce queue */
                         out_bounce_route_queue(out->s2s, rkey, rkeylen, stanza_err_REMOTE_SERVER_TIMEOUT);
-                        _out_dns_mark_bad(out, NULL);
+                        _out_dns_mark_bad(out);
                     }
                 } while(xhash_iter_next(out->routes));
             }
@@ -1376,7 +1408,7 @@ void send_dialbacks(conn_t out)
       if (bad != NULL) {
           log_debug(ZONE, "removing bad host entry for '%s'", out->key);
           xhash_zap(out->s2s->dns_bad, out->key);
-          free(bad->key);
+          free((void*)bad->key);
           free(bad);
       }
   }
@@ -1425,11 +1457,11 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                 log_write(out->s2s->log, LOG_NOTICE, "[%d] [%s, port=%d] read error: %s (%d)", out->fd->fd, out->ip, out->port, MIO_STRERROR(MIO_ERROR), MIO_ERROR);
 
                 if (!out->online) {
-                    _out_dns_mark_bad(out, NULL);
+                    _out_dns_mark_bad(out);
                 }
 
                 sx_kill(s);
-                
+
                 return -1;
             }
 
@@ -1461,7 +1493,7 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
             log_write(out->s2s->log, LOG_NOTICE, "[%d] [%s, port=%d] write error: %s (%d)", out->fd->fd, out->ip, out->port, MIO_STRERROR(MIO_ERROR), MIO_ERROR);
 
             if (!out->online) {
-                _out_dns_mark_bad(out, NULL);
+                _out_dns_mark_bad(out);
             }
 
             sx_kill(s);
@@ -1486,9 +1518,8 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                          strstr(sxe->specific, "undefined-condition") ||       /* something bad happend */
                          strstr(sxe->specific, "internal-server-error") ||     /* that server is broken */
                          strstr(sxe->specific, "unsupported-version")          /* they do not support our stream version */
-                        )))
-            {
-                _out_dns_mark_bad(out, NULL);
+                        ))) {
+                _out_dns_mark_bad(out);
             }
 
             sx_kill(s);
@@ -1509,7 +1540,7 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
 
                 /* if no stream version from either side, kick off dialback for each route, */
                 /* otherwise wait for stream features */
-                if ((out->s->res_version==NULL) || (out->s2s->sx_ssl == NULL)) {
+                if (((out->s->res_version==NULL) || (out->s2s->sx_ssl == NULL)) && out->s2s->require_tls == 0) {
                      log_debug(ZONE, "no stream version, sending dialbacks for %s immediately", out->key);
                      out->online = 1;
                      send_dialbacks(out);
@@ -1527,8 +1558,8 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
             nad = (nad_t) data;
 
             /* watch for the features packet - STARTTLS and/or SASL*/
-            if ((out->s->res_version!=NULL) 
-                 && NAD_NURI_L(nad, NAD_ENS(nad, 0)) == strlen(uri_STREAMS)   
+            if ((out->s->res_version!=NULL)
+                 && NAD_NURI_L(nad, NAD_ENS(nad, 0)) == strlen(uri_STREAMS)
                  && strncmp(uri_STREAMS, NAD_NURI(nad, NAD_ENS(nad, 0)), strlen(uri_STREAMS)) == 0
                  && NAD_ENAME_L(nad, 0) == 8 && strncmp("features", NAD_ENAME(nad, 0), 8) == 0) {
                 log_debug(ZONE, "got the stream features packet");
@@ -1541,7 +1572,7 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                         elem = nad_find_elem(nad, 0, ns, "starttls", 1);
                         if(elem >= 0) {
                             log_debug(ZONE, "got STARTTLS in stream features");
-                            if(sx_ssl_client_starttls(out->s2s->sx_ssl, s, out->s2s->local_pemfile) == 0) {
+                            if(sx_ssl_client_starttls(out->s2s->sx_ssl, s, out->s2s->local_pemfile, out->s2s->local_private_key_password) == 0) {
                                 starttls = 1;
                                 nad_free(nad);
                                 return 0;
@@ -1553,13 +1584,19 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
 
                 /* If we're not establishing a starttls connection, send dialbacks */
                 if (!starttls) {
+                    if (out->s2s->require_tls == 0 || s->ssf > 0) {
                      log_debug(ZONE, "No STARTTLS, sending dialbacks for %s", out->key);
                      out->online = 1;
                      send_dialbacks(out);
+                    } else {
+                        log_debug(ZONE, "No STARTTLS, dialbacks disabled for non-TLS connections, cannot complete negotiation");
+                    }
                 }
 #else
+                if (out->s2s->require_tls == 0) {
                 out->online = 1;
                 send_dialbacks(out);
+                }
 #endif
             }
 
@@ -1583,14 +1620,17 @@ static int _out_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                     return 0;
                 }
             }
-                
+
             log_debug(ZONE, "unknown dialback packet, dropping it");
 
             nad_free(nad);
             return 0;
 
         case event_CLOSED:
+            if (out->fd != NULL) {
             mio_close(out->s2s->mio, out->fd);
+                out->fd = NULL;
+            }
             return -1;
     }
 
@@ -1623,7 +1663,7 @@ static void _out_result(conn_t out, nad_t nad) {
     rkeylen = strlen(rkey);
 
     /* key is valid */
-    if(nad_find_attr(nad, 0, -1, "type", "valid") >= 0) {
+    if(nad_find_attr(nad, 0, -1, "type", "valid") >= 0 && xhash_get(out->states, rkey) == (void*) conn_INPROGRESS) {
         log_write(out->s2s->log, LOG_NOTICE, "[%d] [%s, port=%d] outgoing route '%s' is now valid%s%s", out->fd->fd, out->ip, out->port, rkey, (out->s->flags & SX_SSL_WRAPPER) ? ", TLS negotiated" : "", out->s->compressed ? ", ZLIB compression enabled" : "");
 
         xhash_put(out->states, pstrdup(xhash_pool(out->states), rkey), (void *) conn_VALID);    /* !!! small leak here */
@@ -1673,7 +1713,7 @@ static void _out_verify(conn_t out, nad_t nad) {
     conn_t in;
     char *rkey;
     int valid;
-    
+
     attr = nad_find_attr(nad, 0, -1, "from", NULL);
     if(attr < 0 || (from = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {
         log_debug(ZONE, "missing or invalid from on db verify packet");
@@ -1711,7 +1751,7 @@ static void _out_verify(conn_t out, nad_t nad) {
     rkey = s2s_route_key(NULL, to->domain, from->domain);
 
     attr = nad_find_attr(nad, 0, -1, "type", "valid");
-    if(attr >= 0) {
+    if(attr >= 0 && xhash_get(in->states, rkey) == (void*) conn_INPROGRESS) {
         xhash_put(in->states, pstrdup(xhash_pool(in->states), rkey), (void *) conn_VALID);
         log_write(in->s2s->log, LOG_NOTICE, "[%d] [%s, port=%d] incoming route '%s' is now valid%s%s", in->fd->fd, in->ip, in->port, rkey, (in->s->flags & SX_SSL_WRAPPER) ? ", TLS negotiated" : "", in->s->compressed ? ", ZLIB compression enabled" : "");
         valid = 1;
@@ -1771,7 +1811,7 @@ int out_bounce_domain_queues(s2s_t s2s, const char *domain, int err)
 }
 
 /* bounce all packets in the queue for route */
-int out_bounce_route_queue(s2s_t s2s, char *rkey, int rkeylen, int err)
+int out_bounce_route_queue(s2s_t s2s, const char *rkey, int rkeylen, int err)
 {
   jqueue_t q;
   pkt_t pkt;
@@ -1800,7 +1840,7 @@ int out_bounce_route_queue(s2s_t s2s, char *rkey, int rkeylen, int err)
   rkey = q->key;
   jqueue_free(q);
   xhash_zap(s2s->outq, rkey);
-  free(rkey);
+  free((void*)rkey);
 
   return pktcount;
 }
@@ -1840,7 +1880,7 @@ void out_flush_domain_queues(s2s_t s2s, const char *domain) {
   }
 }
 
-void out_flush_route_queue(s2s_t s2s, char *rkey, int rkeylen) {
+void out_flush_route_queue(s2s_t s2s, const char *rkey, int rkeylen) {
     jqueue_t q;
     pkt_t pkt;
     int npkt, i, ret;
@@ -1871,7 +1911,7 @@ void out_flush_route_queue(s2s_t s2s, char *rkey, int rkeylen) {
         rkey = q->key;
         jqueue_free(q);
         xhash_zap(s2s->outq, rkey);
-        free(rkey);
+        free((void*)rkey);
     } else {
         log_debug(ZONE, "emptied queue gained more packets...");
     }

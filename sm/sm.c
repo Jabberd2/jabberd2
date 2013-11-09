@@ -169,7 +169,7 @@ int sm_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
                     if (ns >= 0) {
                         elem = nad_find_elem(nad, 0, ns, "starttls", 1);
                         if (elem >= 0) {
-                            if (sx_ssl_client_starttls(sm->sx_ssl, s, NULL) == 0) {
+                            if (sx_ssl_client_starttls(sm->sx_ssl, s, NULL, NULL) == 0) {
                                 nad_free(nad);
                                 return 0;
                             }
@@ -231,6 +231,7 @@ int sm_sx_callback(sx_t s, sx_event_t e, void *data, void *arg) {
 
         case event_CLOSED:
             mio_close(sm->mio, sm->fd);
+            sm->fd = NULL;
             return -1;
     }
 
@@ -276,7 +277,7 @@ int sm_mio_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *data, void *arg)
 }
 
 /** send a new action route */
-void sm_c2s_action(sess_t dest, char *action, char *target) {
+void sm_c2s_action(sess_t dest, const char *action, const char *target) {
     nad_t nad;
     int rns, sns;
 
@@ -309,7 +310,7 @@ void sm_c2s_action(sess_t dest, char *action, char *target) {
 }
 
 /** this is gratuitous, but apache gets one, so why not? */
-void sm_signature(sm_t sm, char *str) {
+void sm_signature(sm_t sm, const char *str) {
     if (sm->siglen == 0) {
         snprintf(&sm->signature[sm->siglen], 2048 - sm->siglen, "%s", str);
         sm->siglen += strlen(str);
@@ -320,7 +321,7 @@ void sm_signature(sm_t sm, char *str) {
 }
 
 /** register a new global ns */
-int sm_register_ns(sm_t sm, char *uri) {
+int sm_register_ns(sm_t sm, const char *uri) {
     int ns_idx;
 
     ns_idx = (int) (long) xhash_get(sm->xmlns, uri);
@@ -334,7 +335,7 @@ int sm_register_ns(sm_t sm, char *uri) {
 }
 
 /** unregister a global ns */
-void sm_unregister_ns(sm_t sm, char *uri) {
+void sm_unregister_ns(sm_t sm, const char *uri) {
     int refcount = (int) (long) xhash_get(sm->xmlns_refcount, uri);
     if (refcount == 1) {
         xhash_zap(sm->xmlns, uri);
@@ -345,7 +346,49 @@ void sm_unregister_ns(sm_t sm, char *uri) {
 }
 
 /** get a globally registered ns */
-int sm_get_ns(sm_t sm, char *uri) {
+int sm_get_ns(sm_t sm, const char *uri) {
     return (int) (long) xhash_get(sm->xmlns, uri);
 }
 
+// Rate limit check:  Prevent denial-of-service due to excessive database queries
+// Make sure owner is responsible for the query!
+int sm_storage_rate_limit(sm_t sm, const char *owner) {
+    rate_t rt;
+    user_t user;
+    sess_t sess;
+    item_t item;
+
+    if (sm->query_rate_total == 0 || owner == NULL)
+    return FALSE;
+
+    user = xhash_get(sm->users, owner);
+    if (user != NULL) {
+        rt = (rate_t) xhash_get(sm->query_rates, owner);
+        if (rt == NULL) {
+            rt = rate_new(sm->query_rate_total, sm->query_rate_seconds, sm->query_rate_wait);
+            xhash_put(sm->query_rates, pstrdup(xhash_pool(sm->query_rates), owner), (void *) rt);
+            pool_cleanup(xhash_pool(sm->query_rates), (void (*)(void *)) rate_free, rt);
+        }
+
+        if(rate_check(rt) == 0) {
+            log_write(sm->log, LOG_WARNING, "[%s] is being disconnected, too many database queries within %d seconds", owner, sm->query_rate_seconds);
+            user = xhash_get(sm->users, owner);
+            for (sess = user->sessions; sess != NULL; sess = sess->next) {
+                sm_c2s_action(sess, "ended", NULL);
+            }
+            if(xhash_iter_first(user->roster))
+                do {
+                    xhash_iter_get(user->roster, NULL, NULL, (void *) &item);
+                    if(item->to) {
+                        pkt_router(pkt_create(user->sm, "presence", "unavailable", jid_full(item->jid), jid_full(user->jid)));
+                    }
+                } while(xhash_iter_next(user->roster));
+            return TRUE;
+            } else {
+                rate_add(rt, 1);
+            }
+        } else {
+            log_debug(ZONE, "Error: could not get user data for %s", owner);
+    }
+    return FALSE;
+}

@@ -37,27 +37,29 @@
 
 #define LDAPVCARD_SEARCH_MAX_RETRIES 1
 
+extern int _ldap_get_lderrno(LDAP *ld);
+
 /** internal structure, holds our data */
 typedef struct drvdata_st {
     LDAP *ld;
-    char *uri;
+    const char *uri;
 
-    char *binddn;
-    char *bindpw;
-    char *basedn;
+    const char *binddn;
+    const char *bindpw;
+    const char *basedn;
 
-    char *objectclass; // objectclass of jabber users
-    char *uidattr; // search attribute for users
-    char *validattr; // search attribute for valid
-    char *pwattr; // attribute which holds password
-    char *groupattr; // attribute with group name for published-roster in jabberuser entry
-    char *groupattr_regex; // regex to create a new group attribute based on groupattr
-    char *publishedattr; // can we publish it?
+    const char *objectclass; // objectclass of jabber users
+    const char *uidattr; // search attribute for users
+    const char *validattr; // search attribute for valid
+    const char *pwattr; // attribute which holds password
+    const char *groupattr; // attribute with group name for published-roster in jabberuser entry
+    const char *groupattr_regex; // regex to create a new group attribute based on groupattr
+    const char *publishedattr; // can we publish it?
 
-    char *groupsdn; // base dn for group names search
-    char *groupsoc; // objectclass for group names search
-    char *groupsidattr; // search attribute for group names
-    char *groupnameattr; // attribute with text group name
+    const char *groupsdn; // base dn for group names search
+    const char *groupsoc; // objectclass for group names search
+    const char *groupsidattr; // search attribute for group names
+    const char *groupnameattr; // attribute with text group name
 
     int srvtype;
     int mappedgroups;
@@ -82,13 +84,16 @@ ldapvcard_entry_st ldapvcard_entry[] =
     {"telephoneNumber","tel",os_type_STRING},
     {"mail","email",os_type_STRING},
     {"title","title",os_type_STRING},
-//    {"","role",os_type_STRING},
-//    {"","bday",os_type_STRING},
+    {"role","role",os_type_STRING},
+    {"dateOfBirth","bday",os_type_UNKNOWN}, /* fake type. TODO: os_type_DATE? */
+//    {"birthDate","bday",os_type_UNKNOWN}, /* http://tools.ietf.org/html/draft-gryphon-ldap-schema-vcard4-00 */
     {"description","desc",os_type_STRING},
     {"givenName","n-given",os_type_STRING},
     {"jpegPhoto","photo-binval",os_type_STRING},
     {"sn","n-family",os_type_STRING},
+    {"initials","n-middle",os_type_STRING},
     {"st","adr-street",os_type_STRING},
+    {"zip","adr-extadd",os_type_STRING},
     {"l","adr-locality",os_type_STRING},
 //    {"","adr-region",os_type_STRING},
     {"postalCode","adr-pcode",os_type_STRING},
@@ -98,26 +103,25 @@ ldapvcard_entry_st ldapvcard_entry[] =
     {NULL,NULL,0}
 };
 
-int processregex(char *src, char *regex, int patterngroups, int wantedgroup, char *dest, size_t dest_size, st_driver_t drv) {
+static int processregex(char *src, const char *regex, int patterngroups, int wantedgroup, char *dest, size_t dest_size, st_driver_t drv) {
   regex_t preg;
   regmatch_t pmatch[patterngroups];
-  int error;
   //log_debug(ZONE,"processregex: src='%s' regex='%s'", src, regex);
-  if (error=regcomp(&preg, regex, REG_ICASE|REG_EXTENDED) !=0) {
+  if (regcomp(&preg, regex, REG_ICASE|REG_EXTENDED) !=0) {
         log_write(drv->st->log, LOG_ERR, "ldapvcard: regex compile failed on '%s'", regex);
 	return -1;
   }
-  if (error=regexec(&preg, src, patterngroups, pmatch, 0) !=0) {
+  if (regexec(&preg, src, patterngroups, pmatch, 0) !=0) {
         log_write(drv->st->log, LOG_ERR, "ldapvcard: regexec failed");
 	return -2;
   }
-  regfree(&preg); 
+  regfree(&preg);
   int len = pmatch[wantedgroup].rm_eo-pmatch[wantedgroup].rm_so>dest_size?dest_size:pmatch[wantedgroup].rm_eo-pmatch[wantedgroup].rm_so;
   memcpy(dest, src+pmatch[wantedgroup].rm_so, len);
   dest[len<dest_size?len:dest_size]='\0';
   //log_debug(ZONE,"processregex: dest='%s'", dest);
   return 0;
-} 
+}
 
 #ifndef NO_SM_CACHE
 void os_copy(os_t src, os_t dst) {
@@ -170,7 +174,7 @@ static int rebindProc(LDAP *ld, LDAP_CONST char *url, ber_tag_t request, ber_int
         log_debug(ZONE, "ldapvcard: bind failed (to %s): %s", url, ldap_err2string(_ldap_get_lderrno(data->ld)));
         ldap_unbind_s(data->ld);
         data->ld = NULL;
-        return NULL;
+        return LDAP_INAPPROPRIATE_AUTH;
     }
 
     return LDAP_SUCCESS;
@@ -261,8 +265,8 @@ static st_ret_t _st_ldapvcard_get(st_driver_t drv, const char *type, const char 
     os_object_t o;
     char validfilter[256], ldapfilter[1024], **vals;
     char *attrs_vcard[sizeof(ldapvcard_entry)/sizeof(ldapvcard_entry_st)];
-    char *attrs_pr[] = { data->uidattr, data->groupattr, "sn", "displayName", "initials", NULL };
-    char *attrs_prg[] = { data->groupnameattr, NULL };
+    const char *attrs_pr[] = { data->uidattr, data->groupattr, "sn", "displayName", "initials", NULL };
+    const char *attrs_prg[] = { data->groupnameattr, NULL };
     LDAPMessage *result, *entry;
     ldapvcard_entry_st le;
     int i,ival;
@@ -319,12 +323,21 @@ static st_ret_t _st_ldapvcard_get(st_driver_t drv, const char *type, const char 
                 if ( ldap_count_values_len(valphoto) > 0 )
                 {
                     char *VALJPG = b64_encode(valphoto[0]->bv_val, valphoto[0]->bv_len);
-                    os_object_put(o, "photo-type", "image/jpeg", os_type_STRING);
                     os_object_put(o, "photo-binval", VALJPG, os_type_STRING);
+                    if( !strncmp(VALJPG, "/9j/4", 5) ) {
+                        os_object_put(o, "photo-type", "image/jpeg", os_type_STRING);
+                    } else if( !strncmp(VALJPG, "iVBOR", 5) ) {
+                        os_object_put(o, "photo-type", "image/png", os_type_STRING);
+                    } else if( !strncmp(VALJPG, "R0lGO", 5) ) {
+                        os_object_put(o, "photo-type", "image/gif", os_type_STRING);
+                    } else {
+                        log_write(drv->st->log, LOG_ERR, "ldap: unknown photo fprmat photo %s", VALJPG);
+                        os_object_put(o, "photo-type", "image/jpeg", os_type_STRING);
+                    }
                     free(VALJPG);
                 }
                 ldap_value_free_len(valphoto);
-            } else { 
+            } else {
                 vals=(char **)ldap_get_values(data->ld,entry,le.ldapentry);
                 if( ldap_count_values(vals) > 0  ) {
                     switch(le.ot) {
@@ -335,6 +348,22 @@ static st_ret_t _st_ldapvcard_get(st_driver_t drv, const char *type, const char 
                             break;
                         case os_type_STRING:
                             os_object_put(o, le.vcardentry, vals[0], le.ot);
+                            break;
+                        case os_type_UNKNOWN: /* TODO: os_type_DATE? */
+                            if( strlen(vals[0])==15 && vals[0][14]=='Z' ) { /* YYYYMMDDHHmmssZ */
+                                /* convert generalizedTime to ISO-8601 date */
+                                vals[0][10]='\0';
+                                vals[0][9]=vals[0][7];
+                                vals[0][8]=vals[0][6];
+                                vals[0][7]='-';
+                                vals[0][6]=vals[0][5];
+                                vals[0][5]=vals[0][4];
+                                vals[0][4]='-';
+                                os_object_put(o, le.vcardentry, vals[0], os_type_STRING);
+                            }
+                            break;
+                        case os_type_NAD:
+                            log_write(drv->st->log, LOG_ERR, "ldapvcard: got unsupported os_type_NAD");
                             break;
                     }
                 }
@@ -364,13 +393,13 @@ static st_ret_t _st_ldapvcard_get(st_driver_t drv, const char *type, const char 
                     snprintf(validfilter, 256, "(&(%s=*)(!(%s=0)))", data->publishedattr, data->publishedattr);
                 }
             }
-                
+
             snprintf(ldapfilter, 1024, "(&%s(objectClass=%s)(%s=*))", validfilter, data->objectclass, data->uidattr);
 
             log_debug(ZONE, "search filter: %s", ldapfilter);
 
 retry_pubrost:
-            if(ldap_search_s(data->ld, data->basedn, LDAP_SCOPE_SUBTREE, ldapfilter, attrs_pr, 0, &result))
+            if(ldap_search_s(data->ld, data->basedn, LDAP_SCOPE_SUBTREE, ldapfilter, (char**)attrs_pr, 0, &result))
             {
                 if( tried++ < LDAPVCARD_SEARCH_MAX_RETRIES ) {
                     log_debug(ZONE, "ldapvcard: search fail, will retry; %s: %s", ldapfilter, ldap_err2string(_st_ldapvcard_get_lderrno(data->ld)));
@@ -401,8 +430,9 @@ retry_pubrost:
                     ldap_value_free(vals);
                     continue;
                 }
-                if (data->groupattr_regex != NULL && processregex(vals[0],data->groupattr_regex,2,1,&group,sizeof(group),drv) !=0) {
-                    strncpy(group,vals[0],sizeof(group)-1); 
+                if (data->groupattr_regex == NULL || processregex(vals[0],data->groupattr_regex,2,1,group,sizeof(group),drv) !=0) {
+                    // if there is no regex defined or processing the regex failed - take value as is
+                    strncpy(group,vals[0],sizeof(group)-1);
                 }
                 group[sizeof(group)-1]='\0';
                 ldap_value_free(vals);
@@ -410,7 +440,6 @@ retry_pubrost:
                 vals = (char **)ldap_get_values(data->ld,entry,data->uidattr);
                 if( ldap_count_values(vals) <= 0 ) {
                     ldap_value_free(vals);
-                    free(group);
                     continue;
                 }
                 strncpy(jid,vals[0],sizeof(jid)-1); jid[sizeof(jid)-1]='\0';
@@ -439,7 +468,7 @@ retry_pubrost:
                 os_object_put(o,"from",&ival,os_type_BOOLEAN);
                 ival=0;
                 os_object_put(o,"ask",&ival,os_type_INTEGER);
-            } while( entry = ldap_next_entry(data->ld, entry) );
+            } while( (entry = ldap_next_entry(data->ld, entry)) );
             ldap_msgfree(result);
 #ifndef NO_SM_CACHE
             if( data->cache_ttl ) {
@@ -458,7 +487,7 @@ retry_pubrost:
         snprintf(ldapfilter, 1024, "(&(objectClass=%s)(%s=%s))", data->groupsoc, data->groupsidattr, owner);
         log_debug(ZONE, "search filter: %s", ldapfilter);
 retry_pubrostgr:
-        if(ldap_search_s(data->ld, data->basedn, LDAP_SCOPE_SUBTREE, ldapfilter, attrs_prg, 0, &result))
+        if(ldap_search_s(data->ld, data->basedn, LDAP_SCOPE_SUBTREE, ldapfilter, (char**)attrs_prg, 0, &result))
         {
             if( tried++ < LDAPVCARD_SEARCH_MAX_RETRIES ) {
                 log_debug(ZONE, "ldapvcard: search fail, will retry; %s: %s", ldapfilter, ldap_err2string(_st_ldapvcard_get_lderrno(data->ld)));
@@ -525,7 +554,7 @@ static void _st_ldapvcard_free(st_driver_t drv) {
 DLLEXPORT st_ret_t st_init(st_driver_t drv)
 {
     drvdata_t data;
-    char *uri, *basedn, *srvtype_s;
+    const char *uri, *basedn, *srvtype_s;
     int srvtype_i;
 
     log_write(drv->st->log, LOG_NOTICE, "ldapvcard: initializing");
@@ -577,11 +606,11 @@ DLLEXPORT st_ret_t st_init(st_driver_t drv)
         data->groupattr = "jabberPublishedGroup";
 
     data->groupattr_regex = config_get_one(drv->st->config, "storage.ldapvcard.groupattr_regex", 0);
-    
+
     data->publishedattr = config_get_one(drv->st->config, "storage.ldapvcard.publishedattr", 0);
     if(data->publishedattr == NULL)
         data->publishedattr = "jabberPublishedItem";
-    
+
 #ifndef NO_SM_CACHE
     data->cache_ttl = j_atoi(config_get_one(drv->st->config, "storage.ldapvcard.publishedcachettl", 0), 0);
     data->cache = NULL;

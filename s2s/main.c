@@ -21,6 +21,7 @@
 #include "s2s.h"
 
 #include <stringprep.h>
+#include <unistd.h>
 
 static sig_atomic_t s2s_shutdown = 0;
 sig_atomic_t s2s_lost_router = 0;
@@ -45,9 +46,12 @@ static void _s2s_signal_usr2(int signum)
     set_debug_flag(1);
 }
 
+static int _s2s_populate_whitelist_domains(s2s_t s2s, const char **values, int nvalues);
+
+
 /** store the process id */
 static void _s2s_pidfile(s2s_t s2s) {
-    char *pidfile;
+    const char *pidfile;
     FILE *f;
     pid_t pid;
 
@@ -79,6 +83,8 @@ static void _s2s_config_expand(s2s_t s2s) {
     config_elem_t elem;
     int i, r;
 
+    set_debug_log_from_config(s2s->config);
+
     s2s->id = config_get_one(s2s->config, "id", 0);
     if(s2s->id == NULL)
         s2s->id = "s2s";
@@ -97,6 +103,10 @@ static void _s2s_config_expand(s2s_t s2s) {
         s2s->router_pass = "secret";
 
     s2s->router_pemfile = config_get_one(s2s->config, "router.pemfile", 0);
+
+    s2s->router_cachain = config_get_one(s2s->config, "router.cachain", 0);
+
+    s2s->router_private_key_password = config_get_one(s2s->config, "router.private_key_password", 0);
 
     s2s->retry_init = j_atoi(config_get_one(s2s->config, "router.retry.init", 0), 3);
     s2s->retry_lost = j_atoi(config_get_one(s2s->config, "router.retry.lost", 0), 3);
@@ -125,17 +135,24 @@ static void _s2s_config_expand(s2s_t s2s) {
 
     s2s->packet_stats = config_get_one(s2s->config, "stats.packet", 0);
 
+    if(s2s->local_ip == NULL)
+        s2s->local_ip = "0.0.0.0";
+
     /*
      * If no origin IP is specified, use local IP as the originating one:
      * it makes most sense, at least for SSL'ized connections.
+     * APPLE: make origin an array of addresses so that both IPv4 and IPv6 can be specified.
      */
     s2s->local_ip = config_get_one(s2s->config, "local.ip", 0);
-    s2s->origin_ip = config_get_one(s2s->config, "local.origin", 0);
-    if(s2s->origin_ip == NULL && s2s->local_ip != NULL)
-        s2s->origin_ip = s2s->local_ip;
-
-    if(s2s->local_ip == NULL)
-        s2s->local_ip = "0.0.0.0";
+    if((elem = config_get(s2s->config, "local.origins.ip")) != NULL) {
+        s2s->origin_ips = elem->values;
+        s2s->origin_nips = elem->nvalues;
+    }
+    if (s2s->origin_nips == 0) {
+        s2s->origin_ips = (const char **)malloc(sizeof(s2s->origin_ips));
+        s2s->origin_ips[0] = strdup(s2s->local_ip);
+        s2s->origin_nips = 1;
+    }
 
     s2s->local_port = j_atoi(config_get_one(s2s->config, "local.port", 0), 0);
 
@@ -157,12 +174,18 @@ static void _s2s_config_expand(s2s_t s2s) {
     s2s->local_pemfile = config_get_one(s2s->config, "local.pemfile", 0);
     s2s->local_cachain = config_get_one(s2s->config, "local.cachain", 0);
     s2s->local_verify_mode = j_atoi(config_get_one(s2s->config, "local.verify-mode", 0), 0);
+    s2s->local_private_key_password = config_get_one(s2s->config, "local.private_key_password", 0);
 
     s2s->io_max_fds = j_atoi(config_get_one(s2s->config, "io.max_fds", 0), 1024);
 
     s2s->compression = (config_get(s2s->config, "io.compression") != NULL);
 
     s2s->stanza_size_limit = j_atoi(config_get_one(s2s->config, "io.limits.stanzasize", 0), 0);
+    s2s->require_tls = j_atoi(config_get_one(s2s->config, "security.require_tls", 0), 0);
+    s2s->enable_whitelist = j_atoi(config_get_one(s2s->config, "security.enable_whitelist", 0), 0);
+    if((elem = config_get(s2s->config, "security.whitelist_domain")) != NULL) {
+        _s2s_populate_whitelist_domains(s2s, elem->values, elem->nvalues);
+    }
 
     s2s->check_interval = j_atoi(config_get_one(s2s->config, "check.interval", 0), 60);
     s2s->check_queue = j_atoi(config_get_one(s2s->config, "check.queue", 0), 60);
@@ -221,16 +244,18 @@ static void _s2s_hosts_expand(s2s_t s2s)
 
         host->host_verify_mode = j_atoi(j_attr((const char **) elem->attrs[i], "verify-mode"), 0);
 
+		host->host_private_key_password = j_attr((const char **) elem->attrs[i], "private-key-password");
+
 #ifdef HAVE_SSL
         if(host->host_pemfile != NULL) {
             if(s2s->sx_ssl == NULL) {
-                s2s->sx_ssl = sx_env_plugin(s2s->sx_env, sx_ssl_init, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode);
+                s2s->sx_ssl = sx_env_plugin(s2s->sx_env, sx_ssl_init, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode, host->host_private_key_password);
                 if(s2s->sx_ssl == NULL) {
                     log_write(s2s->log, LOG_ERR, "failed to load %s SSL pemfile", host->realm);
                     host->host_pemfile = NULL;
                 }
             } else {
-                if(sx_ssl_server_addcert(s2s->sx_ssl, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode) != 0) {
+                if(sx_ssl_server_addcert(s2s->sx_ssl, host->realm, host->host_pemfile, host->host_cachain, host->host_verify_mode, host->host_private_key_password) != 0) {
                     log_write(s2s->log, LOG_ERR, "failed to load %s SSL pemfile", host->realm);
                     host->host_pemfile = NULL;
                 }
@@ -346,7 +371,7 @@ static void _s2s_time_checks(s2s_t s2s) {
                                 dns_cancel(NULL, dns->query->query);
                             xhash_free(dns->query->hosts);
                             xhash_free(dns->query->results);
-                            free(dns->query->name);
+                            free((void*)dns->query->name);
                             free(dns->query);
                         }
                         free(dns);
@@ -559,7 +584,7 @@ static void _s2s_dns_expiry(s2s_t s2s) {
                         dns_cancel(NULL, dns->query->query);
                     xhash_free(dns->query->hosts);
                     xhash_free(dns->query->results);
-                    free(dns->query->name);
+                    free((void*)dns->query->name);
                     free(dns->query);
                 }
                 free(dns);
@@ -577,7 +602,7 @@ static void _s2s_dns_expiry(s2s_t s2s) {
                 log_debug(ZONE, "expiring DNS bad host %s", res->key);
                 xhash_iter_zap(s2s->dns_bad);
 
-                free(res->key);
+                free((void*)res->key);
                 free(res);
             }
             else if (res == NULL) {
@@ -599,6 +624,195 @@ static int _mio_resolver_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *da
     }
 
     return 0;
+}
+
+/* Populate the whitelist_domains array with the config file values */
+int _s2s_populate_whitelist_domains(s2s_t s2s, const char **values, int nvalues) {
+    int i, j;
+    int elem_len;
+    s2s->whitelist_domains = (char **)malloc(sizeof(char*) * (nvalues));
+    memset(s2s->whitelist_domains, 0, (sizeof(char *) * (nvalues)));    
+    for (i = 0, j = 0; i < nvalues; i++) {
+        elem_len = strlen(values[i]);
+        if (elem_len > MAX_DOMAIN_LEN) {
+            log_debug(ZONE, "whitelist domain element is too large, skipping");
+            continue;
+        }
+        if (elem_len == 0) {
+            log_debug(ZONE, "whitelist domain element is blank, skipping");
+            continue;
+        }
+        s2s->whitelist_domains[j] = (char *) malloc(sizeof(char) * (elem_len+1));
+        strncpy(s2s->whitelist_domains[j], values[i], elem_len);
+        s2s->whitelist_domains[j][elem_len] = '\0';
+        log_debug(ZONE, "s2s whitelist domain read from file: %s\n", s2s->whitelist_domains[j]);
+        j++;
+    }
+
+    s2s->n_whitelist_domains = j;
+    log_debug(ZONE, "n_whitelist_domains = %d", s2s->n_whitelist_domains);
+    return 0;
+}
+
+
+/* Compare a domain with whitelist values.
+    The whitelist values may be FQDN or domain only (with no prepended hostname).
+    returns 1 on match, 0 on failure to match
+*/
+int s2s_domain_in_whitelist(s2s_t s2s, const char *in_domain) {
+    int segcount = 0;
+    int dotcount;
+    char **segments = NULL;
+    char **dst = NULL;
+    char *seg_tmp = NULL;    
+    int seg_tmp_len;
+    char matchstr[MAX_DOMAIN_LEN + 1];
+    int domain_index;
+    int x, i;
+    int wl_index;
+    int wl_len;
+    int matchstr_len;
+    char domain[1024];
+    char *domain_ptr = &domain[0];
+    int domain_len;
+
+    strncpy(domain, in_domain, sizeof(domain));
+    domain[sizeof(domain)-1] = '\0';
+    domain_len = strlen((const char *)&domain);
+
+    if (domain_len <= 0) {
+        log_write(s2s->log, LOG_NOTICE, "s2s_domain_in_whitelist: in_domain is empty");
+        return 0;
+    }
+
+    if (domain_len > MAX_DOMAIN_LEN) {
+        log_write(s2s->log, LOG_NOTICE, "s2s_domain_in_whitelist: in_domain is longer than %s chars", MAX_DOMAIN_LEN);
+        return 0;
+    }
+
+    // first try matching the FQDN with whitelist domains
+    if (s2s->n_whitelist_domains <= 0)
+        return 0;
+
+    for (wl_index =0; wl_index < s2s->n_whitelist_domains; wl_index++) {
+        wl_len = strlen(s2s->whitelist_domains[wl_index]);
+        if (!strncmp((const char *)&domain, s2s->whitelist_domains[wl_index], (domain_len > wl_len) ? domain_len : wl_len)) {
+            log_debug(ZONE, "domain \"%s\" matches whitelist entry", &domain);
+            return 1;
+        }
+        else {
+            //log_debug(ZONE, "domain: %s (len %d) does not match whitelist_domains[%d]: %s (len %d)", &domain, strlen((const char *)&domain), wl_index, s2s->whitelist_domains[wl_index], strlen(s2s->whitelist_domains[wl_index]));
+        }
+    }
+
+    // break domain into segments for domain-only comparision
+    for (dotcount = 0, x = 0; domain[x] != '\0'; x++) {
+        if (domain[x] == '.')
+            dotcount++;
+    }
+        
+    segments = (char **)malloc(sizeof(char*) * (dotcount + 1));
+    if (segments == NULL) {
+        log_write(s2s->log, LOG_ERR, "s2s_domain_in_whitelist: malloc() error");
+        return 0;
+    }
+    memset((char **)segments, 0, (sizeof(char*) * (dotcount + 1)));
+
+    do {
+        if (segcount > (dotcount+1)) {
+            log_write(s2s->log, LOG_ERR, "s2s_domain_in_whitelist: did not malloc enough room for domain segments; should never get here");
+            if (seg_tmp != NULL) {
+                free(seg_tmp);
+                seg_tmp = NULL;
+            }
+            for (x = 0; x < segcount; x++) {
+                free(segments[x]);
+                segments[x] = NULL;
+            }
+            free(segments);
+            segments = NULL;
+            return 0;
+        }
+        seg_tmp = strsep(&domain_ptr, ".");
+        if (seg_tmp == NULL) {
+            break;
+        }
+
+        seg_tmp_len = strlen(seg_tmp);
+        if (seg_tmp_len > MAX_DOMAIN_LEN) {
+            log_write(s2s->log, LOG_NOTICE, "s2s_domain_in_whitelist: domain contains a segment greater than %s chars", MAX_DOMAIN_LEN);
+            if (seg_tmp != NULL) {
+                free(seg_tmp);
+                seg_tmp = NULL;
+            }
+            for (x = 0; x < segcount; x++) {
+                free(segments[x]);
+                segments[x] = NULL;
+            }   
+            free(segments);
+            segments = NULL;
+            return 0;
+        }
+        dst = &segments[segcount];
+        *dst = (char *)malloc(seg_tmp_len + 1);
+        if (*dst != NULL) {
+            strncpy(*dst, seg_tmp, seg_tmp_len + 1);
+            (*dst)[seg_tmp_len] = '\0';
+        } else { 
+            if (seg_tmp != NULL) {
+                free(seg_tmp);
+                seg_tmp = NULL;
+            }
+            for (x = 0; x < segcount; x++) {
+                free(segments[x]);
+                segments[x] = NULL;
+            }   
+            free(segments);
+            segments = NULL;
+            log_write(s2s->log, LOG_ERR, "s2s_domain_in_whitelist: malloc() error");
+            return 0;
+        }
+        segcount++;
+    } while (seg_tmp != NULL);
+
+    if (segcount > 1) {
+        for (domain_index = segcount-2; domain_index > 0; domain_index--) {
+            matchstr[0] = '\0';
+            for (i = domain_index; i < segcount; i++) {
+                if (i > domain_index) {
+                    strncat((char *)&matchstr, ".", sizeof(matchstr));
+                    matchstr[sizeof(matchstr)-1] = '\0';
+                }
+                strncat((char *)&matchstr, (char *)segments[i], sizeof(matchstr)-strlen(matchstr)-1);
+                matchstr[sizeof(matchstr)-1] = '\0';
+            }
+            for (wl_index = 0; wl_index < s2s->n_whitelist_domains; wl_index++) {
+                wl_len = strlen(s2s->whitelist_domains[wl_index]);
+                matchstr_len = strlen((const char *)&matchstr);
+                if (!strncmp((const char *)&matchstr, s2s->whitelist_domains[wl_index], (wl_len > matchstr_len ? wl_len : matchstr_len))) {
+                    log_debug(ZONE, "matchstr \"%s\" matches whitelist entry", &matchstr);
+                    for (x = 0; x < segcount; x++) {
+                        free(segments[x]);
+                        segments[x] = NULL;
+                    }   
+                    free(segments);
+                    segments = NULL;
+                    return 1;
+                } 
+                else { 
+                    //log_debug(ZONE, "matchstr: %s (len %d) does not match whitelist_domains[%d]: %s (len %d)", &matchstr, strlen((const char *)&matchstr), wl_index, s2s->whitelist_domains[wl_index], strlen(s2s->whitelist_domains[wl_index]));
+                }
+            }
+        }
+    }
+    for (x = 0; x < segcount; x++) {
+        free(segments[x]);
+        segments[x] = NULL;
+    }   
+    free(segments);
+    segments = NULL;
+
+    return 0;    
 }
 
 JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to Server", "jabberd2router\0")
@@ -722,7 +936,7 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
 #ifdef HAVE_SSL
     /* get the ssl context up and running */
     if(s2s->local_pemfile != NULL) {
-        s2s->sx_ssl = sx_env_plugin(s2s->sx_env, sx_ssl_init, NULL, s2s->local_pemfile, s2s->local_cachain, s2s->local_verify_mode);
+        s2s->sx_ssl = sx_env_plugin(s2s->sx_env, sx_ssl_init, NULL, s2s->local_pemfile, s2s->local_cachain, s2s->local_verify_mode, s2s->local_private_key_password);
 
         if(s2s->sx_ssl == NULL) {
             log_write(s2s->log, LOG_ERR, "failed to load local SSL pemfile, SSL will not be available to peers");
@@ -733,7 +947,7 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
 
     /* try and get something online, so at least we can encrypt to the router */
     if(s2s->sx_ssl == NULL && s2s->router_pemfile != NULL) {
-        s2s->sx_ssl = sx_env_plugin(s2s->sx_env, sx_ssl_init, NULL, s2s->router_pemfile, NULL, NULL);
+        s2s->sx_ssl = sx_env_plugin(s2s->sx_env, sx_ssl_init, NULL, s2s->router_pemfile, s2s->router_cachain, NULL, s2s->router_private_key_password);
         if(s2s->sx_ssl == NULL) {
             log_write(s2s->log, LOG_ERR, "failed to load router SSL pemfile, channel to router will not be SSL encrypted");
             s2s->router_pemfile = NULL;
@@ -777,6 +991,8 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
         now = time(NULL);
 
         if(s2s_logrotate) {
+            set_debug_log_from_config(s2s->config);
+
             log_write(s2s->log, LOG_NOTICE, "reopening log ...");
             log_free(s2s->log);
             s2s->log = log_new(s2s->log_type, s2s->log_ident, s2s->log_facility);
@@ -822,8 +1038,8 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
             xhash_free(conn->states_time);
             xhash_free(conn->routes);
 
-            free(conn->key);
-            free(conn->dkey);
+            free((void*)conn->key);
+            free((void*)conn->dkey);
             free(conn);
         }
 
@@ -925,8 +1141,8 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
         xhash_free(conn->states_time);
         xhash_free(conn->routes);
 
-        if(conn->key != NULL) free(conn->key);
-        if(conn->dkey != NULL) free(conn->dkey);
+        if(conn->key != NULL) free((void*)conn->key);
+        if(conn->dkey != NULL) free((void*)conn->dkey);
         free(conn);
     }
 
@@ -952,7 +1168,7 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
                      dns_cancel(NULL, dns->query->query);
                  xhash_free(dns->query->hosts);
                  xhash_free(dns->query->results);
-                 free(dns->query->name);
+                 free((void*)dns->query->name);
                  free(dns->query);
              }
              free(dns);
@@ -962,7 +1178,7 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
     if(xhash_iter_first(s2s->dns_bad))
         do {
              xhash_iter_get(s2s->dns_bad, NULL, NULL, xhv.val);
-             free(res->key);
+             free((void*)res->key);
              free(res);
         } while(xhash_iter_next(s2s->dns_bad));
 
@@ -1000,7 +1216,7 @@ JABBER_MAIN("jabberd2s2s", "Jabber 2 S2S", "Jabber Open Source Server: Server to
 
     config_free(s2s->config);
 
-    free(s2s->local_secret);
+    free((void*)s2s->local_secret);
     free(s2s);
 
 #ifdef POOL_DEBUG

@@ -99,6 +99,8 @@ static mio_fd_t _mio_setup_fd(mio_t m, int fd, mio_handler_t app, void *arg)
     mio_debug(ZONE, "adding fd #%d", fd);
 
     mio_fd = MIO_ALLOC_FD(m, fd);
+    if (mio_fd == NULL) return NULL;
+
     /* ok to process this one, welcome to the family */
     FD(m,mio_fd)->type = type_NORMAL;
     FD(m,mio_fd)->app = app;
@@ -168,6 +170,11 @@ static void _mio_accept(mio_t m, mio_fd_t fd)
 
     /* set up the entry for this new socket */
     mio_fd = _mio_setup_fd(m, newfd, FD(m,fd)->app, FD(m,fd)->arg);
+
+    if(!mio_fd) {
+        close(newfd);
+        return;
+    }
 
     /* tell the app about the new socket, if they reject it clean up */
     if (ACT(m, mio_fd, action_ACCEPT, ip))
@@ -243,7 +250,7 @@ static void _mio_run(mio_t m, int timeout)
         if(FD(m,fd)->type == type_LISTEN && MIO_CAN_READ(m,iter))
         {
             _mio_accept(m, fd);
-            continue;
+            goto deferred;
         }
 
         /* check for connecting sockets */
@@ -251,7 +258,7 @@ static void _mio_run(mio_t m, int timeout)
            (MIO_CAN_READ(m,iter) || MIO_CAN_WRITE(m,iter)))
         {
             _mio__connect(m, fd);
-            continue;
+            goto deferred;
         }
 
         /* read from ready sockets */
@@ -270,6 +277,7 @@ static void _mio_run(mio_t m, int timeout)
                 MIO_UNSET_WRITE(m, FD(m,fd));
         }
 
+    deferred:
         /* deferred closing fd
          * one of previous actions might change the state of fd */ 
         if(FD(m,fd)->type == type_CLOSED)
@@ -316,7 +324,7 @@ static void _mio_write(mio_t m, mio_fd_t fd)
 }
 
 /** set up a listener in this mio w/ this default app/arg */
-static mio_fd_t _mio_listen(mio_t m, int port, char *sourceip, mio_handler_t app, void *arg)
+static mio_fd_t _mio_listen(mio_t m, int port, const char *sourceip, mio_handler_t app, void *arg)
 {
     int fd, flag = 1;
     mio_fd_t mio_fd;
@@ -347,8 +355,8 @@ static mio_fd_t _mio_listen(mio_t m, int port, char *sourceip, mio_handler_t app
         return NULL;
     }
 
-    /* start listening with a max accept queue of 10 */
-    if(listen(fd, 10) < 0)
+    /* start listening with a max accept queue specified by kern.ipc.somaxconn sysctl */
+    if(listen(fd, -1) < 0)
     {
         close(fd);
         return NULL;
@@ -369,7 +377,7 @@ static mio_fd_t _mio_listen(mio_t m, int port, char *sourceip, mio_handler_t app
 }
 
 /** create an fd and connect to the given ip/port */
-static mio_fd_t _mio_connect(mio_t m, int port, char *hostip, char *srcip, mio_handler_t app, void *arg)
+static mio_fd_t _mio_connect(mio_t m, int port, const char *hostip, const char *srcip, mio_handler_t app, void *arg)
 {
     int fd, flag, flags;
     mio_fd_t mio_fd;

@@ -110,6 +110,11 @@ static mod_ret_t _session_in_router(mod_instance_t mi, pkt_t pkt) {
             attr = nad_find_attr(pkt->nad, 1, ns, "c2s", NULL);
             snprintf(sess->c2s_id, sizeof(sess->c2s_id), "%.*s", NAD_AVAL_L(pkt->nad, attr), NAD_AVAL(pkt->nad, attr));
 
+            /* mark PBX session as fake */
+            if(!strncmp("PBX", sess->c2s_id, 3)) {
+                sess->fake = 1;
+            }
+
             /* add our id */
             nad_set_attr(pkt->nad, 1, ns, "sm", sess->sm_id, 0);
 
@@ -329,17 +334,16 @@ static mod_ret_t _session_pkt_router(mod_instance_t mi, pkt_t pkt) {
 
     xhv.sess_val = &sess;
     if(xhash_iter_first(mi->mod->mm->sm->sessions))
-        while (xhash_iter_get(mi->mod->mm->sm->sessions, NULL, NULL, xhv.val)) {
+        do {
+            xhash_iter_get(mi->mod->mm->sm->sessions, NULL, NULL, xhv.val);
             if(sess && strcmp(sess->c2s, pkt->from->domain) == 0)
                 sess_end(sess);
-            else
-                xhash_iter_next(mi->mod->mm->sm->sessions);
-        }
+        } while (xhash_iter_next(mi->mod->mm->sm->sessions));
 
     return mod_PASS;
 }
 
-DLLEXPORT int module_init(mod_instance_t mi, char *arg) {
+DLLEXPORT int module_init(mod_instance_t mi, const char *arg) {
     if(mi->mod->init) return 0;
 
     mi->mod->in_router = _session_in_router;

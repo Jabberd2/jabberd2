@@ -33,7 +33,6 @@ static int _sx_ssl_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
     char    buf[256];
     X509   *err_cert;
     int     err, depth;
-    SSL    *ssl;
 
     err_cert = X509_STORE_CTX_get_current_cert(ctx);
     err = X509_STORE_CTX_get_error(ctx);
@@ -52,7 +51,6 @@ static int _sx_ssl_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
      * Retrieve the pointer to the SSL of the connection currently treated
      * and the application specific data stored into the SSL object.
      */
-    ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
     X509_NAME_oneline(X509_get_subject_name(err_cert), buf, 256);
 
     if (!preverify_ok) {
@@ -76,6 +74,13 @@ static int _sx_ssl_verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 
     return preverify_ok;
  }
+
+static int _sx_pem_passwd_callback(char *buf, int size, int rwflag, void *password)
+{
+    strncpy(buf, (char *)(password), size);
+    buf[size - 1] = '\0';
+    return(strlen(buf));
+}
 
 static void _sx_ssl_starttls_notify_proceed(sx_t s, void *arg) {
     char *to = NULL;
@@ -176,6 +181,8 @@ static int _sx_ssl_process(sx_t s, sx_plugin_t p, nad_t nad) {
             if(s->plugin_data[p->index] != NULL) {
                 if( ((_sx_ssl_conn_t)s->plugin_data[p->index])->pemfile != NULL )
                     free(((_sx_ssl_conn_t)s->plugin_data[p->index])->pemfile);
+                if( ((_sx_ssl_conn_t)s->plugin_data[p->index])->private_key_password != NULL )
+                    free(((_sx_ssl_conn_t)s->plugin_data[p->index])->private_key_password);
                 free(s->plugin_data[p->index]);
                 s->plugin_data[p->index] = NULL;
             }
@@ -622,6 +629,7 @@ static void _sx_ssl_client(sx_t s, sx_plugin_t p) {
     SSL_CTX *ctx;
     char *pemfile = NULL;
     int ret, i;
+    char *pemfile_password = NULL;
 
     /* only bothering if they asked for wrappermode */
     if(!(s->flags & SX_SSL_WRAPPER) || s->ssf > 0)
@@ -649,7 +657,7 @@ static void _sx_ssl_client(sx_t s, sx_plugin_t p) {
     sc->ssl = SSL_new(ctx);
     SSL_set_bio(sc->ssl, sc->rbio, sc->wbio);
     SSL_set_connect_state(sc->ssl);
-    SSL_set_ssl_method(sc->ssl, TLSv1_client_method());
+    SSL_set_ssl_method(sc->ssl, TLSv1_2_client_method());
     SSL_set_options(sc->ssl, SSL_OP_NO_TICKET);
 
     /* empty external_id */
@@ -663,6 +671,7 @@ static void _sx_ssl_client(sx_t s, sx_plugin_t p) {
      *     help the admin at all to figure out what happened */
     if(s->plugin_data[p->index] != NULL) {
         pemfile = ((_sx_ssl_conn_t)s->plugin_data[p->index])->pemfile;
+        pemfile_password = ((_sx_ssl_conn_t)s->plugin_data[p->index])->private_key_password;
         free(s->plugin_data[p->index]);
         s->plugin_data[p->index] = NULL;
     }
@@ -676,6 +685,10 @@ static void _sx_ssl_client(sx_t s, sx_plugin_t p) {
             free(pemfile);
             return;
         }
+
+        /* set callback giving a password for pemfile */
+        SSL_CTX_set_default_passwd_cb_userdata(sc->ssl->ctx, (void *)pemfile_password);
+        SSL_CTX_set_default_passwd_cb(sc->ssl->ctx, &_sx_pem_passwd_callback);
 
         /* load the private key */
         ret = SSL_use_PrivateKey_file(sc->ssl, pemfile, SSL_FILETYPE_PEM);
@@ -780,6 +793,8 @@ static void _sx_ssl_free(sx_t s, sx_plugin_t p) {
 
     if(sc->pemfile != NULL) free(sc->pemfile);
 
+    if(sc->private_key_password != NULL) free(sc->private_key_password);
+
     if(sc->ssl != NULL) SSL_free(sc->ssl);      /* frees wbio and rbio too */
 
     if(sc->wq != NULL) {
@@ -811,22 +826,23 @@ int sx_openssl_initialized = 0;
 
 /** args: name, pemfile, cachain, mode */
 int sx_ssl_init(sx_env_t env, sx_plugin_t p, va_list args) {
-    char *name, *pemfile, *cachain;
+    const char *name, *pemfile, *cachain, *password;
     int ret;
     int mode;
 
     _sx_debug(ZONE, "initialising ssl plugin");
 
-    name = va_arg(args, char *);
-    pemfile = va_arg(args, char *);
+    name = va_arg(args, const char *);
+    pemfile = va_arg(args, const char *);
     if(pemfile == NULL)
         return 1;
 
     if(p->private != NULL)
         return 1;
 
-    cachain = va_arg(args, char *);
+    cachain = va_arg(args, const char *);
     mode = va_arg(args, int);
+    password = va_arg(args, char *);
 
     /* !!! output openssl error messages to the debug log */
 
@@ -837,7 +853,7 @@ int sx_ssl_init(sx_env_t env, sx_plugin_t p, va_list args) {
     }
     sx_openssl_initialized = 1;
 
-    ret = sx_ssl_server_addcert(p, name, pemfile, cachain, mode);
+    ret = sx_ssl_server_addcert(p, name, pemfile, cachain, mode, password);
     if(ret)
         return 1;
 
@@ -857,7 +873,7 @@ int sx_ssl_init(sx_env_t env, sx_plugin_t p, va_list args) {
 }
 
 /** args: name, pemfile, cachain, mode */
-int sx_ssl_server_addcert(sx_plugin_t p, char *name, char *pemfile, char *cachain, int mode) {
+int sx_ssl_server_addcert(sx_plugin_t p, const char *name, const char *pemfile, const char *cachain, int mode, const char *password) {
     xht contexts = (xht) p->private;
     SSL_CTX *ctx;
     SSL_CTX *tmp;
@@ -880,9 +896,16 @@ int sx_ssl_server_addcert(sx_plugin_t p, char *name, char *pemfile, char *cachai
     ERR_clear_error();
 
     /* create the context */
-    ctx = SSL_CTX_new(SSLv23_method());
+    ctx = SSL_CTX_new(TLSv1_2_method());
     if(ctx == NULL) {
         _sx_debug(ZONE, "ssl context creation failed; %s", ERR_error_string(ERR_get_error(), NULL));
+        return 1;
+    }
+
+    // Set allowed ciphers
+	if (SSL_CTX_set_cipher_list(ctx, "ALL:!LOW:!SSLv2:!EXP:!aNULL") != 1) {
+        _sx_debug(ZONE, "Can't set cipher list for SSL context: %s", ERR_error_string(ERR_get_error(), NULL));
+        SSL_CTX_free(ctx);
         return 1;
     }
 
@@ -924,6 +947,10 @@ int sx_ssl_server_addcert(sx_plugin_t p, char *name, char *pemfile, char *cachai
         return 1;
     }
 
+    /* set callback giving a password for pemfile */
+    SSL_CTX_set_default_passwd_cb_userdata(ctx, (void *)password);
+    SSL_CTX_set_default_passwd_cb(ctx, &_sx_pem_passwd_callback);
+
     /* load the private key */
     ret = SSL_CTX_use_PrivateKey_file(ctx, pemfile, SSL_FILETYPE_PEM);
     if(ret != 1) {
@@ -950,7 +977,7 @@ int sx_ssl_server_addcert(sx_plugin_t p, char *name, char *pemfile, char *cachai
 
         /* this is the first context, if it's not the default then make a copy of it as the default */
         if(!(name[0] == '*' && name[1] == 0)) {
-            int ret = sx_ssl_server_addcert(p, "*", pemfile, cachain, mode);
+            int ret = sx_ssl_server_addcert(p, "*", pemfile, cachain, mode, password);
 
             if(ret) {
                 /* uh-oh */
@@ -973,7 +1000,7 @@ int sx_ssl_server_addcert(sx_plugin_t p, char *name, char *pemfile, char *cachai
     return 0;
 }
 
-int sx_ssl_client_starttls(sx_plugin_t p, sx_t s, char *pemfile) {
+int sx_ssl_client_starttls(sx_plugin_t p, sx_t s, const char *pemfile, const char *private_key_password) {
     assert((int) (p != NULL));
     assert((int) (s != NULL));
 
@@ -995,6 +1022,10 @@ int sx_ssl_client_starttls(sx_plugin_t p, sx_t s, char *pemfile) {
     if(pemfile != NULL) {
         s->plugin_data[p->index] = (_sx_ssl_conn_t) calloc(1, sizeof(struct _sx_ssl_conn_st));
         ((_sx_ssl_conn_t)s->plugin_data[p->index])->pemfile = strdup(pemfile);
+
+         /* save the given password for later */
+         if(private_key_password != NULL)
+             ((_sx_ssl_conn_t)s->plugin_data[p->index])->private_key_password = strdup(private_key_password);
     }
 
     /* go */

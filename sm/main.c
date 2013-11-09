@@ -73,7 +73,7 @@ static void _sm_signal_usr2(int signum)
 
 /** store the process id */
 static void _sm_pidfile(sm_t sm) {
-    char *pidfile;
+    const char *pidfile;
     FILE *f;
     pid_t pid;
 
@@ -103,6 +103,9 @@ static void _sm_pidfile(sm_t sm) {
 static void _sm_config_expand(sm_t sm)
 {
     char *str;
+    config_elem_t elem;
+
+    set_debug_log_from_config(sm->config);
 
     sm->id = config_get_one(sm->config, "id", 0);
     if(sm->id == NULL)
@@ -122,6 +125,8 @@ static void _sm_config_expand(sm_t sm)
         sm->router_pass = "secret";
 
     sm->router_pemfile = config_get_one(sm->config, "router.pemfile", 0);
+
+    sm->router_private_key_password = config_get_one(sm->config, "router.private_key_password", 0);
 
     sm->retry_init = j_atoi(config_get_one(sm->config, "router.retry.init", 0), 3);
     sm->retry_lost = j_atoi(config_get_one(sm->config, "router.retry.lost", 0), 3);
@@ -145,6 +150,17 @@ static void _sm_config_expand(sm_t sm)
             sm->log_ident = "jabberd/sm";
     } else if(sm->log_type == log_FILE)
         sm->log_ident = config_get_one(sm->config, "log.file", 0);
+        
+    elem = config_get(sm->config, "storage.limits.queries");
+    if(elem != NULL)
+    {
+        sm->query_rate_total = j_atoi(elem->values[0], 0);
+        if(sm->query_rate_total != 0)
+        {
+            sm->query_rate_seconds = j_atoi(j_attr((const char **) elem->attrs[0], "seconds"), 5);
+            sm->query_rate_wait = j_atoi(j_attr((const char **) elem->attrs[0], "throttle"), 60);
+        }
+    }
 }
 
 static void _sm_hosts_expand(sm_t sm)
@@ -350,11 +366,13 @@ JABBER_MAIN("jabberd2sm", "Jabber 2 Session Manager", "Jabber Open Source Server
 
     sm->users = xhash_new(401);
 
+    sm->query_rates = xhash_new(101);
+
     sm->sx_env = sx_env_new();
 
 #ifdef HAVE_SSL
     if(sm->router_pemfile != NULL) {
-        sm->sx_ssl = sx_env_plugin(sm->sx_env, sx_ssl_init, NULL, sm->router_pemfile, NULL, NULL);
+        sm->sx_ssl = sx_env_plugin(sm->sx_env, sx_ssl_init, NULL, sm->router_pemfile, NULL, NULL, sm->router_private_key_password);
         if(sm->sx_ssl == NULL) {
             log_write(sm->log, LOG_ERR, "failed to load SSL pemfile, SSL disabled");
             sm->router_pemfile = NULL;
@@ -382,6 +400,8 @@ JABBER_MAIN("jabberd2sm", "Jabber 2 Session Manager", "Jabber Open Source Server
         mio_run(sm->mio, 5);
 
         if(sm_logrotate) {
+            set_debug_log_from_config(sm->config);
+
             log_write(sm->log, LOG_NOTICE, "reopening log ...");
             log_free(sm->log);
             sm->log = log_new(sm->log_type, sm->log_ident, sm->log_facility);
@@ -429,7 +449,7 @@ JABBER_MAIN("jabberd2sm", "Jabber 2 Session Manager", "Jabber Open Source Server
             xhash_iter_get(sm->sessions, NULL, NULL, (void *) &sess);
             sm_c2s_action(sess, "ended", NULL);
             sess_end(sess);
-        } while(xhash_count(sm->sessions) > 0);
+        } while (xhash_iter_next(sm->sessions));
 
     xhash_free(sm->sessions);
 
@@ -446,6 +466,7 @@ JABBER_MAIN("jabberd2sm", "Jabber 2 Session Manager", "Jabber Open Source Server
     xhash_free(sm->xmlns_refcount);
     xhash_free(sm->users);
     xhash_free(sm->hosts);
+    xhash_free(sm->query_rates);
 
     sx_free(sm->router);
 

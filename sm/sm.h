@@ -90,7 +90,7 @@ typedef struct mm_st        *mm_t;
 #define ns_AMP_CONDITION_MATCHRESOURCE  (21)
 
 /** packet types */
-typedef enum { 
+typedef enum {
     pkt_NONE = 0x00,            /**< no packet */
     pkt_MESSAGE = 0x10,         /**< message */
     pkt_MESSAGE_CHAT = 0x11,    /**< message (chat) */
@@ -150,9 +150,9 @@ typedef struct pkt_st {
 typedef struct item_st {
     jid_t               jid;        /**< id of this item */
 
-    char                *name;      /**< display name */
+    const char          *name;      /**< display name */
 
-    char                **groups;   /**< groups this item is in */
+    const char          **groups;   /**< groups this item is in */
 
     int                 ngroups;    /**< number of groups in groups array */
 
@@ -165,19 +165,21 @@ typedef struct item_st {
 
 /** session manager global context */
 struct sm_st {
-    char                *id;                /**< component id */
+    const char          *id;                /**< component id */
 
-    char                *router_ip;         /**< ip to connect to the router at */
+    const char          *router_ip;         /**< ip to connect to the router at */
     int                 router_port;        /**< port to connect to the router at */
-    char                *router_user;       /**< username to authenticate to the router as */
-    char                *router_pass;       /**< password to authenticate to the router with */
-    char                *router_pemfile;    /**< name of file containing a SSL certificate &
+    const char          *router_user;       /**< username to authenticate to the router as */
+    const char          *router_pass;       /**< password to authenticate to the router with */
+    const char          *router_pemfile;    /**< name of file containing a SSL certificate &
                                                  key for channel to the router */
+    const char          *router_private_key_password;    /** password for private key if pemfile
+                                                             key is encrypted */
 
     mio_t               mio;                /**< mio context */
 
     sx_env_t            sx_env;             /**< SX environment */
-    sx_plugin_t         sx_sasl;            /**< SX SASL plugin */ 
+    sx_plugin_t         sx_sasl;            /**< SX SASL plugin */
     sx_plugin_t         sx_ssl;             /**< SX SSL plugin */
 
     sx_t                router;             /**< SX of router connection */
@@ -197,8 +199,8 @@ struct sm_st {
     log_t               log;                /**< log context */
 
     log_type_t          log_type;           /**< log type */
-    char                *log_facility;      /**< syslog facility (local0 - local7) */
-    char                *log_ident;         /**< log identifier */
+    const char          *log_facility;      /**< syslog facility (local0 - local7) */
+    const char          *log_ident;         /**< log identifier */
 
     int                 retry_init;         /**< number of times to try connecting to the router at startup */
     int                 retry_lost;         /**< number of times to try reconnecting to the router if the connection drops */
@@ -220,6 +222,11 @@ struct sm_st {
 
     xht                 hosts;              /**< vHosts map */
 
+    /** Database query rate limits */
+    int                 query_rate_total;
+    int                 query_rate_seconds;
+    int                 query_rate_wait;
+    xht                 query_rates;
 };
 
 /** data for a single user */
@@ -258,6 +265,7 @@ struct sess_st {
 
     int                 available;          /**< true if this session is available */
     int                 pri;                /**< current priority of this session */
+    int                 fake;               /**< true if session is fake (ie. PBX) */
 
     jid_t               A;                  /**< list of jids that this session has sent directed presence to */
     jid_t               E;                  /**< list of jids that bounced presence updates we sent them */
@@ -271,18 +279,20 @@ extern sig_atomic_t sm_lost_router;
 
 /* functions */
 SM_API xht             aci_load(sm_t sm);
-SM_API int             aci_check(xht acls, char *type, jid_t jid);
+SM_API int             aci_check(xht acls, const char *type, jid_t jid);
 SM_API void            aci_unload(xht acls);
 
 SM_API int             sm_sx_callback(sx_t s, sx_event_t e, void *data, void *arg);
 SM_API int             sm_mio_callback(mio_t m, mio_action_t a, mio_fd_t fd, void *data, void *arg);
 SM_API void            sm_timestamp(time_t t, char timestamp[18]);
-SM_API void            sm_c2s_action(sess_t dest, char *action, char *target);
-SM_API void            sm_signature(sm_t sm, char *str);
+SM_API void            sm_c2s_action(sess_t dest, const char *action, const char *target);
+SM_API void            sm_signature(sm_t sm, const char *str);
 
-SM_API int             sm_register_ns(sm_t sm, char *uri);
-SM_API void            sm_unregister_ns(sm_t sm, char *uri);
-SM_API int             sm_get_ns(sm_t sm, char *uri);
+SM_API int             sm_register_ns(sm_t sm, const char *uri);
+SM_API void            sm_unregister_ns(sm_t sm, const char *uri);
+SM_API int             sm_get_ns(sm_t sm, const char *uri);
+
+SM_API int             sm_storage_rate_limit(sm_t sm, const char *owner);
 
 SM_API void            dispatch(sm_t sm, pkt_t pkt);
 
@@ -310,15 +320,15 @@ SM_API void            pres_probe(user_t user);
 SM_API void            sess_route(sess_t sess, pkt_t pkt);
 SM_API sess_t          sess_start(sm_t sm, jid_t jid);
 SM_API void            sess_end(sess_t sess);
-SM_API sess_t          sess_match(user_t user, char *resource);
+SM_API sess_t          sess_match(user_t user, const char *resource);
 
 SM_API user_t          user_load(sm_t sm, jid_t jid);
 SM_API void            user_free(user_t user);
 SM_API int             user_create(sm_t sm, jid_t jid);
 SM_API void            user_delete(sm_t sm, jid_t jid);
 
-SM_API void            feature_register(sm_t sm, char *feature);
-SM_API void            feature_unregister(sm_t sm, char *feature);
+SM_API void            feature_register(sm_t sm, const char *feature);
+SM_API void            feature_unregister(sm_t sm, const char *feature);
 
 
 /* driver module manager */
@@ -392,7 +402,7 @@ struct mm_st {
 struct module_st {
     mm_t                mm;         /**< module manager */
 
-    char                *name;      /**< name of module */
+    const char          *name;      /**< name of module */
 
     int                 index;      /**< module index. this is the index into user->module_data and
                                          sess->module_data where the module can store its own
@@ -441,7 +451,7 @@ struct mod_instance_st {
 
     mod_chain_t         chain;      /**< chain this instance is in */
 
-    char                *arg;       /**< option arg that this instance was started with */
+    const char          *arg;       /**< option arg that this instance was started with */
 };
 
 /** allocate a module manager instance, and loads the modules */

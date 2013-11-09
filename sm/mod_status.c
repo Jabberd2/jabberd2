@@ -30,11 +30,11 @@
 #include "sm.h"
 
 typedef struct _status_st {
-    sm_t    sm;
-    char    *resource;
+    sm_t       sm;
+    const char *resource;
 } *status_t;
 
-static void _status_os_replace(storage_t st, const unsigned char *jid, char *status, char *show, time_t *lastlogin, time_t *lastlogout, nad_t nad) {
+static void _status_os_replace(storage_t st, const char *jid, char *status, char *show, time_t *lastlogin, time_t *lastlogout, nad_t nad) {
     os_t os = os_new();
     os_object_t o = os_object_new(os);
     os_object_put(o, "status", status, os_type_STRING);
@@ -46,7 +46,7 @@ static void _status_os_replace(storage_t st, const unsigned char *jid, char *sta
     os_free(os);
 }
 
-static void _status_store(storage_t st, const unsigned char *jid, pkt_t pkt, time_t *lastlogin, time_t *lastlogout) {
+static void _status_store(storage_t st, const char *jid, pkt_t pkt, time_t *lastlogin, time_t *lastlogout) {
     char *show;
     int show_free = 0;
 
@@ -226,7 +226,7 @@ static void _status_free(module_t mod) {
     free(mod->private);
 }
 
-DLLEXPORT int module_init(mod_instance_t mi, char *arg) {
+DLLEXPORT int module_init(mod_instance_t mi, const char *arg) {
     module_t mod = mi->mod;
 
     status_t tr;

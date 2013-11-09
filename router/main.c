@@ -45,7 +45,7 @@ static void router_signal_usr2(int signum)
 
 /** store the process id */
 static void _router_pidfile(router_t r) {
-    char *pidfile;
+    const char *pidfile;
     FILE *f;
     pid_t pid;
 
@@ -74,7 +74,7 @@ static void _router_pidfile(router_t r) {
 /** pull values out of the config file */
 static void _router_config_expand(router_t r)
 {
-    char *str, *ip, *mask, *name, *target;
+    const char *str, *ip, *mask, *name, *target;
     config_elem_t elem;
     int i;
     alias_t alias;
@@ -82,6 +82,8 @@ static void _router_config_expand(router_t r)
     r->id = config_get_one(r->config, "id", 0);
     if(r->id == NULL)
         r->id = "router";
+
+    set_debug_log_from_config(r->config);
 
     r->log_type = log_STDOUT;
     if(config_get(r->config, "log") != NULL) {
@@ -110,6 +112,8 @@ static void _router_config_expand(router_t r)
     r->local_secret = config_get_one(r->config, "local.secret", 0);
 
     r->local_pemfile = config_get_one(r->config, "local.pemfile", 0);
+
+    r->local_private_key_password = config_get_one(r->config, "local.private_key_password", 0);
 
     r->io_max_fds = j_atoi(config_get_one(r->config, "io.max_fds", 0), 1024);
 
@@ -195,6 +199,10 @@ static void _router_config_expand(router_t r)
             alias->next = r->aliases;
             r->aliases = alias;
         }
+
+    /* message logging to flat file */
+    r->message_logging_enabled = j_atoi(config_get_one(r->config, "message_logging.enabled", 0), 0);
+    r->message_logging_file = config_get_one(r->config, "message_logging.file", 0);
 
     r->check_interval = j_atoi(config_get_one(r->config, "check.interval", 0), 60);
     r->check_keepalive = j_atoi(config_get_one(r->config, "check.keepalive", 0), 0);
@@ -292,6 +300,7 @@ JABBER_MAIN("jabberd2router", "Jabber 2 Router", "Jabber Open Source Server: Rou
     rate_t rt;
     component_t comp;
     union xhashv xhv;
+    int close_wait_max;
     const char *cli_id = 0;
 
 #ifdef POOL_DEBUG
@@ -411,7 +420,7 @@ JABBER_MAIN("jabberd2router", "Jabber 2 Router", "Jabber Open Source Server: Rou
 
 #ifdef HAVE_SSL
     if(r->local_pemfile != NULL) {
-        r->sx_ssl = sx_env_plugin(r->sx_env, sx_ssl_init, NULL, r->local_pemfile, NULL, NULL);
+        r->sx_ssl = sx_env_plugin(r->sx_env, sx_ssl_init, NULL, r->local_pemfile, NULL, NULL, r->local_private_key_password);
         if(r->sx_ssl == NULL)
             log_write(r->log, LOG_ERR, "failed to load SSL pemfile, SSL disabled");
     }
@@ -440,6 +449,8 @@ JABBER_MAIN("jabberd2router", "Jabber 2 Router", "Jabber Open Source Server: Rou
 
         if(router_logrotate)
         {
+            set_debug_log_from_config(r->config);
+
             log_write(r->log, LOG_NOTICE, "reopening log ...");
             log_free(r->log);
             r->log = log_new(r->log_type, r->log_ident, r->log_facility);
@@ -473,7 +484,7 @@ JABBER_MAIN("jabberd2router", "Jabber 2 Router", "Jabber Open Source Server: Rou
             log_debug(ZONE, "running time checks");
 
             _router_time_checks(r);
-            
+
             r->next_check = time(NULL) + r->check_interval;
             log_debug(ZONE, "next time check at %d", r->next_check);
         }
@@ -502,6 +513,8 @@ JABBER_MAIN("jabberd2router", "Jabber 2 Router", "Jabber Open Source Server: Rou
      *     their destinations
      */
 
+    close_wait_max = 30; /* time limit for component shutdown */
+
     /* close connections to components */
     xhv.comp_val = &comp;
     if(xhash_iter_first(r->components))
@@ -510,9 +523,11 @@ JABBER_MAIN("jabberd2router", "Jabber 2 Router", "Jabber Open Source Server: Rou
             log_debug(ZONE, "close component %p", comp);
             if (comp) sx_close(comp->s);
             mio_run(r->mio, 5000);
+            if (1 > close_wait_max--) break;
+            sleep(1);
             while(jqueue_size(r->closefd) > 0)
                 mio_close(r->mio, (mio_fd_t) jqueue_pull(r->closefd));
-        } while(xhash_count(r->components) > 0);
+        } while (xhash_iter_next(r->components));
 
     xhash_free(r->components);
 

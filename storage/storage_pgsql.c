@@ -662,7 +662,7 @@ st_ret_t st_init(st_driver_t drv) {
     if (schema) {
         template = "SET search_path TO \"%s\"";
         setsearchpath = malloc( strlen( template ) + strlen(schema) );
-        sprintf( setpassword, template, schema );
+        sprintf( setsearchpath, template, schema );
 
         PQexec(conn, setsearchpath);
     }

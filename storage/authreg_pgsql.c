@@ -655,7 +655,7 @@ int ar_init(authreg_t ar) {
     if (schema) {
         template = "SET search_path TO \"%s\"";
         setsearchpath = malloc( strlen( template ) + strlen(schema) );
-        sprintf( setpassword, template, schema );
+        sprintf( setsearchpath, template, schema );
 
         PQexec(conn, setsearchpath);
     }

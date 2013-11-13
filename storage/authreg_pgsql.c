@@ -508,7 +508,7 @@ extern int sx_openssl_initialized;
 
 /** start me up */
 int ar_init(authreg_t ar) {
-    const char *host, *port, *dbname, *user, *pass, *conninfo;
+    const char *host, *port, *dbname, *schema, *user, *pass, *conninfo;
     char *create, *select, *setpassword, *delete, *setsearchpath;
     const char *table, *username, *realm;
     char *template;
@@ -658,6 +658,7 @@ int ar_init(authreg_t ar) {
         sprintf( setsearchpath, template, schema );
 
         PQexec(conn, setsearchpath);
+		free(setsearchpath);
     }
 
     pgsqlcontext->conn = conn;

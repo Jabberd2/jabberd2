@@ -656,9 +656,8 @@ int ar_init(authreg_t ar) {
         template = "SET search_path TO \"%s\"";
         setsearchpath = malloc( strlen( template ) + strlen(schema) );
         sprintf( setsearchpath, template, schema );
-
         PQexec(conn, setsearchpath);
-		free(setsearchpath);
+        free(setsearchpath);
     }
 
     pgsqlcontext->conn = conn;

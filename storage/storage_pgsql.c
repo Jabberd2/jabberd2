@@ -663,9 +663,8 @@ st_ret_t st_init(st_driver_t drv) {
         template = "SET search_path TO \"%s\"";
         setsearchpath = malloc( strlen( template ) + strlen(schema) );
         sprintf( setsearchpath, template, schema );
-
         PQexec(conn, setsearchpath);
-		free(setsearchpath);
+        free(setsearchpath);
     }
 
     data = (drvdata_t) calloc(1, sizeof(struct drvdata_st));

@@ -1,0 +1,8 @@
+language:
+  - c
+
+before_install:
+ - sudo apt-get install libudns libgsasl7-dev libpostgresql-ocaml-dev
+
+before_script:
+ - autoreconf && ./configure --enable-pgsql --enable-pipe --enable-debug --enable-ssl && make

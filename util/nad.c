@@ -80,8 +80,11 @@ static int _nad_realloc(void **oblocks, int len)
     /* round up to standard block sizes */
     nlen = (((len-1)/BLOCKSIZE)+1)*BLOCKSIZE;
 
-    /* keep trying till we get it */
+    /* reallocate and zero out the new memory */
     *oblocks = realloc(*oblocks, nlen);
+    if (nlen > len)
+        memset(*oblocks + len, 0, nlen - len);
+
     return nlen;
 }
 

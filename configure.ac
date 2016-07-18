@@ -5,6 +5,7 @@ AC_PREREQ(2.61)
 AC_INIT([jabberd], [2.x.dev], [jabberd2@lists.xiaoka.com])
 AC_CONFIG_SRCDIR([sx/sx.h])
 AC_CONFIG_HEADER([config.h])
+AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE
 AM_SILENT_RULES([yes])
 

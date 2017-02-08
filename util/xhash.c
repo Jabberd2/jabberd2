@@ -126,14 +126,15 @@ xht xhash_new(int prime)
     return xnew;
 }
 
-
-void xhash_putx(xht h, const char *key, int len, void *val)
+/* Returns 0 on success, non-zero on failure */
+int xhash_putx(xht h, const char *key, int len, void *val)
 {
     int index;
     xhn n;
+    char *buf;
 
     if(h == NULL || key == NULL)
-        return;
+        return -1;
 
     index = _xhasher(key,len);
 
@@ -145,25 +146,35 @@ void xhash_putx(xht h, const char *key, int len, void *val)
     {
 /*        log_debug(ZONE,"replacing %s with new val %X",key,val); */
 
-        n->key = key;
+        /* before we touch anything, ensure we can allocate memory */
+        buf = strndup(key, len);
+        if (!buf) return -1;
+        free(n->key);
+        n->key = buf;
         n->keylen = len;
         n->val = val;
-        return;
+        return 0;
     }
 
 /*    log_debug(ZONE,"saving %s val %X",key,val); */
 
+    /* before we allocate new node, ensure we can allocate memory */
+    buf = strndup(key, len);
+    if (!buf) return -1;
+
     /* new node */
     n = _xhash_node_new(h, index);
-    n->key = key;
+    n->key = buf;
     n->keylen = len;
     n->val = val;
+
+    return 0;
 }
 
-void xhash_put(xht h, const char *key, void *val)
+int xhash_put(xht h, const char *key, void *val)
 {
-    if(h == NULL || key == NULL) return;
-    xhash_putx(h,key,strlen(key),val);
+    if(h == NULL || key == NULL) return -1;
+    return xhash_putx(h,key,strlen(key),val);
 }
 
 
@@ -204,6 +215,7 @@ void xhash_zap_inner( xht h, xhn n, int index)
     }
 
     //empty the value.
+    free(n->key);
     n->key = NULL;
     n->val = NULL;
 

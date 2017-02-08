@@ -37,7 +37,7 @@ typedef struct xhn_struct
 {
     struct xhn_struct *next;
     struct xhn_struct *prev;
-    const char *key;
+    char *key;
     int keylen;
     void *val;
 } *xhn, _xhn;
@@ -56,8 +56,8 @@ typedef struct xht_struct
 } *xht, _xht;
 
 JABBERD2_API xht xhash_new(int prime);
-JABBERD2_API void xhash_put(xht h, const char *key, void *val);
-JABBERD2_API void xhash_putx(xht h, const char *key, int len, void *val);
+JABBERD2_API int xhash_put(xht h, const char *key, void *val);
+JABBERD2_API int xhash_putx(xht h, const char *key, int len, void *val);
 JABBERD2_API void *xhash_get(xht h, const char *key);
 JABBERD2_API void *xhash_getx(xht h, const char *key, int len);
 JABBERD2_API void xhash_zap(xht h, const char *key);

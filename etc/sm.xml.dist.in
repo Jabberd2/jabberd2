@@ -700,7 +700,7 @@
 			 2 - set "to" and "from" subscriptions of user's contacts to "1",
 				 auto-accepting all subscription requests ("auto-buddy"). -->
         <!--
-        <fix-subscriptions>2<fix-subscriptions/>
+        <fix-subscriptions>2</fix-subscriptions>
         -->
         <!-- If <override-names/> is uncommented, then displayed names of
              contacts in user's roster will be updated accordingly to

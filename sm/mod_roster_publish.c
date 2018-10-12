@@ -397,26 +397,26 @@ static int _roster_publish_user_load(mod_instance_t mi, user_t user) {
                                 continue; /* do { } while( os_iter_next ) */
                             }
                             if( roster_publish->fixsubs ) {
-								if( roster_publish->fixsubs == 1 ) {
-									/* check subscriptions and correct if needed */
-									os_object_get_bool(os, o, "to", &tmp_to);
-									os_object_get_bool(os, o, "from", &tmp_from);
-									if( item->to != tmp_to || item->from != tmp_from ) {
-										item->to = tmp_to;
-										item->from = tmp_from;
-										log_debug(ZONE, "fixsubs in roster %s, item %s",jid_user(user->jid),jid_user(item->jid));
-										xhash_put(user->roster, jid_full(item->jid), (void *) item);
-										_roster_publish_save_item(user,item);
-									}
-								}
-								if( roster_publish->fixsubs == 2 ) {
-									/* force subscriptions for all published contacts */
+                                if( roster_publish->fixsubs == 1 ) {
+                                    /* check subscriptions and correct if needed */
+                                    os_object_get_bool(os, o, "to", &tmp_to);
+                                    os_object_get_bool(os, o, "from", &tmp_from);
+                                    if( item->to != tmp_to || item->from != tmp_from ) {
+                                        item->to = tmp_to;
+                                        item->from = tmp_from;
+                                        log_debug(ZONE, "fixsubs in roster %s, item %s",jid_user(user->jid),jid_user(item->jid));
+                                        xhash_put(user->roster, jid_full(item->jid), (void *) item);
+                                        _roster_publish_save_item(user,item);
+                                    }
+                                }
+                                if( roster_publish->fixsubs == 2 ) {
+                                    /* force subscriptions for all published contacts */
                                     item->to = 1;
                                     item->from = 1;
                                     log_debug(ZONE, "auto-buddy in roster %s, item %s",jid_user(user->jid),jid_user(item->jid));
                                     xhash_put(user->roster, jid_full(item->jid), (void *) item);
                                     _roster_publish_save_item(user,item);								
-								}
+                                }
                             }
                             if( roster_publish->overridenames ) {
                                 /* override display name if it differs */

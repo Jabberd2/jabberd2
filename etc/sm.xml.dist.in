@@ -694,11 +694,13 @@
              This will significantly speed up publishing of roster.
              If unspecified or 0, no cache is used. -->
         <active-cache-ttl>60</active-cache-ttl>
-        <!-- If <fix-subscriptions/> is not commented, set "to" and "from" subscriptions of
-             user's contacts to subscriptions of corresponding published
-             contacts. -->
+        <!-- If <fix-subscriptions/> is not commented:
+			 1 - set "to" and "from" subscriptions of user's contacts to 
+				 subscriptions of corresponding published contacts.
+			 2 - set "to" and "from" subscriptions of user's contacts to "1",
+				 auto-accepting all subscription requests ("auto-buddy"). -->
         <!--
-        <fix-subscriptions/>
+        <fix-subscriptions>2</fix-subscriptions>
         -->
         <!-- If <override-names/> is uncommented, then displayed names of
              contacts in user's roster will be updated accordingly to

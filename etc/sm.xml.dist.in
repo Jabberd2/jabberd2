@@ -128,7 +128,7 @@
            seconds, connection is throttled for Z seconds. The format
            is:
 
-             <queries seconds='Y' throttle='Z'>X</bytes>
+             <queries seconds='Y' throttle='Z'>X</queries>
 
            Default Y is 5, default Z is 60. set X to 0 to disable. -->
       <!--
